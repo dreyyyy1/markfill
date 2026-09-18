@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: markfill
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npx tsx src/server.ts
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_VERSION
+        value: "22"

@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MarkFill</title>
+  <style>
+    :root {
+      --bg: #0c0d0b;
+      --paper: #141510;
+      --line: #2a2c24;
+      --ink: #f3ecd6;
+      --mute: #8a846c;
+      --amber: #e6b35a;
+      --up: #7dff9a;
+      --down: #ff6a5c;
+      --mono: "IBM Plex Mono", "Cascadia Mono", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--mono); }
+    body { min-height: 100vh; }
+    header {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+      padding: 18px 22px 12px; border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 15px; letter-spacing: .28em; text-transform: uppercase; color: var(--amber); }
+    .tag { color: var(--mute); font-size: 11px; }
+    .session { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; border: 1px solid var(--line); padding: 6px 10px; }
+    .session.open { color: var(--up); border-color: var(--up); }
+    .session.closed { color: var(--amber); border-color: var(--amber); }
+    nav { display: flex; gap: 6px; padding: 12px 22px 0; flex-wrap: wrap; }
+    button {
+      cursor: pointer; font: inherit; letter-spacing: .1em; text-transform: uppercase;
+      font-size: 11px; padding: 10px 12px; background: transparent; color: var(--amber);
+      border: 1px solid var(--amber);
+    }
+    button.ghost { color: var(--mute); border-color: var(--line); }
+    button.on { background: var(--amber); color: #1a1408; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    button.live { background: var(--up); color: #08140c; border-color: var(--up); }
+    button.danger { color: var(--down); border-color: var(--down); }
+    main { padding: 16px 22px 40px; display: grid; gap: 16px; max-width: 1180px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .hero { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
+    .panel { background: var(--paper); border: 1px solid var(--line); padding: 16px; }
+    h2 { margin: 0 0 12px; font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--mute); font-weight: 500; }
+    label { display: block; color: var(--mute); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; margin: 10px 0 6px; }
+    input, select {
+      width: 100%; background: #0c0d0b; color: var(--ink); border: 1px solid var(--line);
+      padding: 10px 12px; font: inherit; font-size: 13px;
+    }
+    .print { font-size: 40px; letter-spacing: -.04em; line-height: 1; }
+    .print.up { color: var(--up); }
+    .print.down { color: var(--down); }
+    .kvs { display: grid; grid-template-columns: 120px 1fr; gap: 6px 10px; font-size: 12px; }
+    .kvs b { color: var(--mute); font-weight: 400; }
+    .note { color: var(--mute); font-size: 12px; line-height: 1.55; margin-top: 12px; }
+    .hidden { display: none !important; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { text-align: left; color: var(--mute); font-weight: 400; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    td { padding: 8px; border-bottom: 1px solid #1c1e16; }
+    .pill { display: inline-block; padding: 2px 7px; border: 1px solid var(--line); font-size: 10px; letter-spacing: .1em; }
+    .pill.cheap { color: var(--up); border-color: var(--up); }
+    .pill.rich { color: var(--down); border-color: var(--down); }
+    .pill.inside { color: var(--amber); border-color: var(--amber); }
+    #log { height: 130px; overflow: auto; background: #080906; border: 1px solid var(--line); padding: 10px; font-size: 12px; color: #cfc6a8; }
+    .btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 16px; }
+    .modal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center;
+      z-index: 40; padding: 20px;
+    }
+    .modal-card { background: var(--paper); border: 1px solid var(--line); max-width: 420px; width: 100%; padding: 18px; }
+    .wlist { display: grid; gap: 8px; margin-top: 12px; }
+    .wlist button { text-align: left; letter-spacing: .06em; }
+    @media (max-width: 900px) { .hero, .row, .btns { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>MarkFill</h1>
+      <div class="tag">NYSE · xStock · Ondo · Jupiter Mobile · Phantom · Solflare</div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <span class="session" id="sess">session</span>
+      <button class="ghost" id="connect">Connect wallet</button>
+      <button class="ghost hidden" id="disconnect">Disconnect</button>
+    </div>
+  </header>
+  <nav>
+    <button class="on" data-tab="tape">Tape</button>
+    <button class="ghost" data-tab="board">Board</button>
+    <button class="ghost" data-tab="buy">Trade</button>
+    <button class="ghost" data-tab="lp">LP</button>
+    <button class="ghost" data-tab="fills">Fills</button>
+  </nav>
+  <main>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <label>Stock</label>
+          <select id="ticker"></select>
+        </div>
+        <div>
+          <label>Band (bps)</label>
+          <input id="band" value="50" />
+        </div>
+        <div>
+          <label>Wallet</label>
+          <div id="wallet" class="note" style="margin-top:12px">not connected</div>
+        </div>
+      </div>
+    </div>
+
+    <section id="view-tape">
+      <div class="hero">
+        <div class="panel">
+          <h2>xStock vs NYSE</h2>
+          <div class="print" id="prem">—</div>
+          <div class="note" id="verdict">waiting for a print</div>
+          <div class="note" id="play"></div>
+        </div>
+        <div class="panel">
+          <h2>Triple tape</h2>
+          <div class="kvs">
+            <b>NYSE</b><span id="nyse">—</span>
+            <b>xStock</b><span id="onchain">—</span>
+            <b>Ondo</b><span id="ondo">—</span>
+            <b>Cheapest</b><span id="cheap">—</span>
+            <b>Overnight</b><span id="gap">—</span>
+            <b>Snap / $100</b><span id="rev">—</span>
+          </div>
+        </div>
+      </div>
+      <p class="note">Pyth sets the cash session. The desk then compares NYSE, the xStock DEX, and Ondo when that feed exists. Buy the discount, sell the premium, LP only when they agree.</p>
+    </section>
+
+    <section id="view-board" class="hidden">
+      <div class="panel" style="overflow:auto">
+        <h2>Overnight board — cheapest first</h2>
+        <button class="ghost" id="scan">Scan all names</button>
+        <table>
+          <thead>
+            <tr><th>Name</th><th>vs NYSE</th><th>Overnight</th><th>Cheapest venue</th><th>Play</th></tr>
+          </thead>
+          <tbody id="board"></tbody>
+        </table>
+        <p class="note">This is the after-hours book. Names at the top are the ones the DEX is giving you cheaper than cash.</p>
+      </div>
+    </section>
+
+    <section id="view-buy" class="hidden">
+      <div class="panel">
+        <h2>Trade the tape</h2>
+        <label>USDC size</label>
+        <input id="usd" value="10" />
+        <div class="kvs" style="margin-top:14px">
+          <b>Shares</b><span id="shares">—</span>
+          <b>Implied</b><span id="implied">—</span>
+          <b>Gate</b><span id="gate">—</span>
+        </div>
+        <div class="btns">
+          <button class="live" id="buy" disabled>Buy cheap / fair</button>
+          <button class="danger" id="sell" disabled>Sell rich</button>
+          <button class="ghost" id="arm">Arm wait</button>
+        </div>
+        <p class="note" id="armnote">Arm wait: leave this tab open. When the name comes back inside the band (or goes cheap), MarkFill quotes and sends the buy. Unarm to stop.</p>
+      </div>
+    </section>
+
+    <section id="view-lp" class="hidden">
+      <div class="panel">
+        <h2>Session LP</h2>
+        <div class="kvs">
+          <b>May LP</b><span id="lpok">—</span>
+          <b>Width</b><span id="lpw">—</span>
+          <b>Pool</b><span id="lppool">—</span>
+          <b>Range</b><span id="lprange">—</span>
+        </div>
+        <div class="btns" style="grid-template-columns:1fr 1fr">
+          <button class="ghost" id="dolp">Refresh plan</button>
+          <button class="ghost" id="openm">Open Meteora</button>
+        </div>
+        <p class="note" id="lpreason">NYSE open → tight bins. Overnight fair → wider bins. Off-tape → no LP.</p>
+      </div>
+    </section>
+
+    <section id="view-fills" class="hidden">
+      <div class="panel">
+        <h2>Fair-print receipts</h2>
+        <div id="fills" class="note">no fills yet</div>
+        <p class="note">Each fill stores NYSE, on-chain, bps, and session at send time. That is the proof the gate did work.</p>
+      </div>
+    </section>
+
+    <div class="panel">
+      <h2>Log</h2>
+      <div id="log"></div>
+    </div>
+  </main>
+  <div class="modal hidden" id="wmodal">
+    <div class="modal-card">
+      <h2>Connect a Solana wallet</h2>
+      <div class="wlist" id="wlist"></div>
+      <div id="jupbox" class="hidden">
+        <p class="note">Open this desk inside <b>Jupiter Mobile</b> → globe (dApp browser), then tap Connect again. Or scan:</p>
+        <div style="text-align:center;margin:12px 0">
+          <img id="jupqr" alt="QR" width="180" height="180" />
+        </div>
+        <button class="ghost" id="copyurl">Copy desk URL</button>
+      </div>
+      <p class="note">Installed wallets show first. Jupiter Mobile uses its in-app browser — same as Phantom’s browse link.</p>
+      <button class="ghost" id="wclose" style="margin-top:12px;width:100%">Close</button>
+    </div>
+  </div>
+<script type="module">
+import { VersionedTransaction } from "https://esm.sh/@solana/web3.js@1.98.4";
+import { bootStandard, discoverWallets, connectWallet, disconnectWallet, signAndSend } from "./wallets.js";
+
+const $ = (id) => document.getElementById(id);
+let session = null;
+let pubkey = null;
+let lastTape = null;
+let lastLp = null;
+let armed = false;
+let armBusy = false;
+
+function log(msg) {
+  const t = new Date().toISOString().slice(11, 19);
+  $("log").innerHTML = `<div>${t}  ${msg}</div>` + $("log").innerHTML;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, {
+    headers: { "content-type": "application/json" },
+    ...opts,
+    body: opts && opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function money(n) {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  n = Number(n);
+  return "$" + n.toFixed(n >= 100 ? 2 : 3);
+}
+function bps(n) {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  const v = Number(n);
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + " bps";
+}
+
+async function loadStocks() {
+  const rows = await api("/api/stocks");
+  $("ticker").innerHTML = rows.map((s) => `<option value="${s.ticker}">${s.ticker} · ${s.xSymbol}</option>`).join("");
+}
+
+function syncButtons() {
+  const a = lastTape?.actions || {};
+  $("buy").disabled = !(pubkey && (a.buyFair || a.buyCheap));
+  $("sell").disabled = !(pubkey && a.sellRich);
+}
+
+async function refreshTape() {
+  const ticker = $("ticker").value;
+  const band = Number($("band").value || 50);
+  const t = await api("/api/tape?ticker=" + encodeURIComponent(ticker) + "&band=" + band);
+  lastTape = t;
+  $("sess").textContent = t.session === "open" ? "NYSE OPEN" : "NYSE CLOSED";
+  $("sess").className = "session " + t.session;
+  const prem = t.premiumBps;
+  const el = $("prem");
+  if (prem == null) { el.textContent = "no print"; el.className = "print"; }
+  else {
+    el.textContent = bps(prem);
+    el.className = "print " + (t.verdict === "cheap" || t.verdict === "inside" ? "up" : "down");
+  }
+  $("verdict").textContent = (t.verdict || "—") + " · " + (t.xSymbol || "");
+  $("play").textContent = t.play || "";
+  $("nyse").textContent = t.nyse ? money(t.nyse.price) + "  " + t.nyse.source : "—";
+  $("onchain").textContent = t.onchain ? money(t.onchain.price) + "  " + t.onchain.source : "—";
+  $("ondo").textContent = t.ondo ? money(t.ondo.price) + "  pyth" : "no Ondo feed";
+  $("cheap").textContent = t.cheapest || "—";
+  $("gap").textContent = bps(t.overnightGapBps);
+  $("rev").textContent = t.reversionUsdPer100 == null ? "—" : money(t.reversionUsdPer100);
+  syncButtons();
+  if (armed && !armBusy && (t.actions?.buyCheap || t.actions?.buyFair)) {
+    fire("buy");
+  }
+  return t;
+}
+
+async function fire(side) {
+  if (!pubkey) return;
+  armBusy = true;
+  try {
+    const r = await api("/api/swap", {
+      method: "POST",
+      body: {
+        ticker: $("ticker").value,
+        usd: Number($("usd").value),
+        bandBps: Number($("band").value),
+        userPublicKey: pubkey,
+        side,
+      },
+    });
+    $("shares").textContent = r.shares ? r.shares.toFixed(6) : "—";
+    $("implied").textContent = money(r.implied);
+    $("gate").textContent = r.reason;
+    const raw = Uint8Array.from(atob(r.swapTransaction), (c) => c.charCodeAt(0));
+    const tx = VersionedTransaction.deserialize(raw);
+    const hash = await signAndSend(session, tx);
+    if (r.receipt?.id) {
+      await api("/api/receipts/tx", { method: "POST", body: { id: r.receipt.id, tx: hash } });
+    }
+    log((side === "sell" ? "sold " : "bought ") + r.tape.xSymbol + "  " + hash);
+    if (armed && side === "buy") {
+      armed = false;
+      $("arm").textContent = "Arm wait";
+      $("armnote").textContent = "Fill landed. Arm cleared.";
+    }
+    loadFills();
+  } catch (e) {
+    log(e.message);
+    $("gate").textContent = e.message;
+  }
+  armBusy = false;
+  syncButtons();
+}
+
+function renderWalletList() {
+  const rows = discoverWallets();
+  $("wlist").innerHTML = rows.map((w) =>
+    `<button class="ghost" data-wid="${w.id}">${w.name}${w.installed ? "" : " · setup"}</button>`
+  ).join("");
+  $("wlist").querySelectorAll("[data-wid]").forEach((b) => {
+    b.onclick = async () => {
+      const row = rows.find((x) => x.id === b.getAttribute("data-wid"));
+      try {
+        const s = await connectWallet(row);
+        if (s.mode === "jupiter-mobile") {
+          $("jupbox").classList.remove("hidden");
+          $("jupqr").src = "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(s.url);
+          log("open this URL in Jupiter Mobile dApp browser");
+          return;
+        }
+        session = s;
+        pubkey = s.publicKey;
+        $("wallet").textContent = (s.name || "wallet") + "  " + pubkey.slice(0, 4) + "…" + pubkey.slice(-4);
+        $("connect").textContent = "Switch wallet";
+        $("disconnect").classList.remove("hidden");
+        $("wmodal").classList.add("hidden");
+        log("connected " + (s.name || "") + " " + pubkey);
+        syncButtons();
+      } catch (e) {
+        log(e.message);
+      }
+    };
+  });
+}
+
+function clearSession() {
+  session = null;
+  pubkey = null;
+  $("wallet").textContent = "not connected";
+  $("connect").textContent = "Connect wallet";
+  $("disconnect").classList.add("hidden");
+  syncButtons();
+}
+
+$("connect").onclick = () => {
+  $("jupbox").classList.add("hidden");
+  $("wmodal").classList.remove("hidden");
+  renderWalletList();
+};
+$("disconnect").onclick = async () => {
+  await disconnectWallet(session);
+  clearSession();
+  log("disconnected");
+};
+$("wclose").onclick = () => $("wmodal").classList.add("hidden");
+$("copyurl").onclick = async () => {
+  await navigator.clipboard.writeText(window.location.href);
+  log("desk URL copied — paste into Jupiter Mobile globe");
+};
+
+bootStandard(() => {
+  if (!$("wmodal").classList.contains("hidden")) renderWalletList();
+});
+
+document.querySelectorAll("nav button").forEach((b) => {
+  b.onclick = () => {
+    const tab = b.getAttribute("data-tab");
+    ["tape", "board", "buy", "lp", "fills"].forEach((t) => {
+      $("view-" + t).classList.toggle("hidden", t !== tab);
+      const btn = document.querySelector(`[data-tab="${t}"]`);
+      btn.classList.toggle("on", t === tab);
+      btn.classList.toggle("ghost", t !== tab);
+    });
+    if (tab === "fills") loadFills();
+    if (tab === "lp") refreshLp();
+  };
+});
+
+$("ticker").onchange = () => refreshTape();
+$("buy").onclick = () => fire("buy");
+$("sell").onclick = () => fire("sell");
+$("arm").onclick = () => {
+  if (!pubkey) { log("connect wallet first"); return; }
+  armed = !armed;
+  $("arm").textContent = armed ? "Armed — waiting" : "Arm wait";
+  $("armnote").textContent = armed
+    ? "Watching this name. When it is cheap or fair, MarkFill will send the buy."
+    : "Arm wait is off.";
+  log(armed ? "armed" : "unarmed");
+};
+
+$("scan").onclick = async () => {
+  $("scan").disabled = true;
+  $("scan").textContent = "scanning…";
+  try {
+    const data = await api("/api/board?band=" + Number($("band").value || 50));
+    $("board").innerHTML = data.rows.map((r) => `
+      <tr>
+        <td>${r.ticker} <span class="pill ${r.verdict}">${r.verdict}</span></td>
+        <td class="${(r.premiumBps||0) < 0 ? "up" : "down"}">${bps(r.premiumBps)}</td>
+        <td>${bps(r.overnightGapBps)}</td>
+        <td>${r.cheapest || "—"}</td>
+        <td>${r.play}</td>
+      </tr>`).join("");
+  } catch (e) { log(e.message); }
+  $("scan").disabled = false;
+  $("scan").textContent = "Scan all names";
+};
+
+async function refreshLp() {
+  lastLp = await api("/api/lp?ticker=" + encodeURIComponent($("ticker").value) + "&band=" + Number($("band").value));
+  $("lpok").textContent = lastLp.lpOk ? "YES" : "NO";
+  $("lpw").textContent = lastLp.sessionWidth != null ? "±" + lastLp.sessionWidth + " bins" : "—";
+  $("lppool").textContent = lastLp.pool?.name || "no Meteora pool indexed";
+  $("lprange").textContent = lastLp.range.fromBinId != null ? lastLp.range.fromBinId + " → " + lastLp.range.toBinId : "—";
+  $("lpreason").textContent = lastLp.reason;
+}
+$("dolp").onclick = refreshLp;
+$("openm").onclick = () => { if (lastLp?.meteoraUrl) window.open(lastLp.meteoraUrl, "_blank"); };
+
+async function loadFills() {
+  const rows = await api("/api/receipts");
+  $("fills").innerHTML = rows.length
+    ? rows.map((r) => `<div>${new Date(r.t).toISOString().slice(11,19)}  ${r.side} ${r.ticker}  ${money(r.usd)}  ${bps(r.premiumBps)}  ${r.session}  ${r.tx ? r.tx.slice(0,8)+"…" : "unsigned"}</div>`).join("")
+    : "no fills yet";
+}
+
+await loadStocks();
+await refreshTape();
+setInterval(refreshTape, 8000);
+</script>
+</body>
+</html>
