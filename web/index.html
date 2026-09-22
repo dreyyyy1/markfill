@@ -91,6 +91,7 @@
     <button class="on" data-tab="tape">Tape</button>
     <button class="ghost" data-tab="board">Board</button>
     <button class="ghost" data-tab="buy">Trade</button>
+    <button class="ghost" data-tab="account">Account</button>
     <button class="ghost" data-tab="lp">LP</button>
     <button class="ghost" data-tab="fills">Fills</button>
   </nav>
@@ -160,11 +161,43 @@
           <b>Gate</b><span id="gate">—</span>
         </div>
         <div class="btns">
-          <button class="live" id="buy" disabled>Buy cheap / fair</button>
-          <button class="danger" id="sell" disabled>Sell rich</button>
-          <button class="ghost" id="arm">Arm wait</button>
+          <button class="live" id="buy" disabled>Buy from my wallet</button>
+          <button class="danger" id="sell" disabled>Sell from my wallet</button>
+          <button class="ghost" id="arm">Arm desk</button>
         </div>
-        <p class="note" id="armnote">Arm wait: leave this tab open. When the name comes back inside the band (or goes cheap), MarkFill quotes and sends the buy. Unarm to stop.</p>
+        <p class="note" id="armnote">Arm desk uses your <b>deposited USDC</b> on MarkFill. The site wallet signs the fill. You do not approve each trade. Deposit on the Account tab first. “From my wallet” still needs a signature.</p>
+      </div>
+    </section>
+
+    <section id="view-account" class="hidden">
+      <div class="panel">
+        <h2>Your MarkFill wallet</h2>
+        <div class="kvs">
+          <b>Your address</b><span id="deskaddr">—</span>
+          <b>Desk live</b><span id="desklive">—</span>
+          <b>Your USDC</b><span id="myusdc">—</span>
+        </div>
+        <div class="btns" style="grid-template-columns:1fr 1fr 1fr">
+          <button class="ghost" id="copydesk">Copy address</button>
+          <button class="ghost" id="scandeposit">Scan deposits</button>
+          <button class="ghost" id="refreshme">Refresh</button>
+        </div>
+        <button class="ghost" id="exportkey" style="margin-top:8px;width:100%">Export my desk key</button>
+        <p class="note">This address is <b>only yours</b> and does not change after it is created. Send USDC and a little SOL for fees. Export the key to import it in Phantom/Jupiter if you want full control.</p>
+      </div>
+      <div class="panel">
+        <h2>What you bought</h2>
+        <div id="holdings" class="note">connect a wallet</div>
+      </div>
+      <div class="panel">
+        <h2>Withdraw to main wallet</h2>
+        <label>USDC amount</label>
+        <input id="wd-usdc" placeholder="10" />
+        <button class="ghost" id="wdusdc" style="margin-top:10px">Withdraw USDC</button>
+        <label>Stock shares</label>
+        <input id="wd-shares" placeholder="0.01" />
+        <button class="ghost" id="wdtok" style="margin-top:10px">Withdraw this ticker</button>
+        <p class="note">Withdrawals go back to the connected wallet. Put a little SOL on your MarkFill address for fees.</p>
       </div>
     </section>
 
@@ -215,7 +248,7 @@
   </div>
 <script type="module">
 import { VersionedTransaction } from "https://esm.sh/@solana/web3.js@1.98.4";
-import { bootStandard, discoverWallets, connectWallet, disconnectWallet, signAndSend } from "./wallets.js";
+import { bootStandard, discoverWallets, connectWallet, disconnectWallet, signAndSend, signMessage } from "./wallets.js";
 
 const $ = (id) => document.getElementById(id);
 let session = null;
@@ -224,6 +257,7 @@ let lastTape = null;
 let lastLp = null;
 let armed = false;
 let armBusy = false;
+let deskAddr = "";
 
 function log(msg) {
   const t = new Date().toISOString().slice(11, 19);
@@ -286,9 +320,6 @@ async function refreshTape() {
   $("gap").textContent = bps(t.overnightGapBps);
   $("rev").textContent = t.reversionUsdPer100 == null ? "—" : money(t.reversionUsdPer100);
   syncButtons();
-  if (armed && !armBusy && (t.actions?.buyCheap || t.actions?.buyFair)) {
-    fire("buy");
-  }
   return t;
 }
 
@@ -354,6 +385,7 @@ function renderWalletList() {
         $("wmodal").classList.add("hidden");
         log("connected " + (s.name || "") + " " + pubkey);
         syncButtons();
+        loadMe();
       } catch (e) {
         log(e.message);
       }
@@ -393,7 +425,7 @@ bootStandard(() => {
 document.querySelectorAll("nav button").forEach((b) => {
   b.onclick = () => {
     const tab = b.getAttribute("data-tab");
-    ["tape", "board", "buy", "lp", "fills"].forEach((t) => {
+    ["tape", "board", "buy", "account", "lp", "fills"].forEach((t) => {
       $("view-" + t).classList.toggle("hidden", t !== tab);
       const btn = document.querySelector(`[data-tab="${t}"]`);
       btn.classList.toggle("on", t === tab);
@@ -401,20 +433,41 @@ document.querySelectorAll("nav button").forEach((b) => {
     });
     if (tab === "fills") loadFills();
     if (tab === "lp") refreshLp();
+    if (tab === "account") loadMe();
   };
 });
 
 $("ticker").onchange = () => refreshTape();
 $("buy").onclick = () => fire("buy");
 $("sell").onclick = () => fire("sell");
-$("arm").onclick = () => {
+$("arm").onclick = async () => {
   if (!pubkey) { log("connect wallet first"); return; }
-  armed = !armed;
-  $("arm").textContent = armed ? "Armed — waiting" : "Arm wait";
-  $("armnote").textContent = armed
-    ? "Watching this name. When it is cheap or fair, MarkFill will send the buy."
-    : "Arm wait is off.";
-  log(armed ? "armed" : "unarmed");
+  try {
+    if (armed) {
+      await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value } });
+      armed = false;
+      $("arm").textContent = "Arm desk";
+      $("armnote").textContent = "Arm is off. Deposit USDC on Account, then Arm again.";
+      log("disarmed");
+      return;
+    }
+    await api("/api/desk/arm", {
+      method: "POST",
+      body: {
+        owner: pubkey,
+        ticker: $("ticker").value,
+        usd: Number($("usd").value),
+        bandBps: Number($("band").value),
+        side: "buy",
+      },
+    });
+    armed = true;
+    $("arm").textContent = "Armed — desk will fill";
+    $("armnote").textContent = "MarkFill will buy from your deposited USDC when this name is cheap or fair. No extra wallet popup.";
+    log("armed on desk wallet");
+  } catch (e) {
+    log(e.message);
+  }
 };
 
 $("scan").onclick = async () => {
@@ -446,6 +499,98 @@ async function refreshLp() {
 $("dolp").onclick = refreshLp;
 $("openm").onclick = () => { if (lastLp?.meteoraUrl) window.open(lastLp.meteoraUrl, "_blank"); };
 
+async function loadDesk() {
+  try {
+    const q = pubkey ? "?owner=" + encodeURIComponent(pubkey) : "";
+    const d = await api("/api/desk" + q);
+    deskAddr = d.address || "";
+    $("deskaddr").textContent = deskAddr || (pubkey ? "—" : "connect to see your address");
+    $("desklive").textContent = "on";
+  } catch (e) {
+    $("deskaddr").textContent = e.message;
+  }
+}
+
+async function loadMe() {
+  await loadDesk();
+  if (!pubkey) {
+    $("myusdc").textContent = "—";
+    $("holdings").textContent = "connect a wallet";
+    return;
+  }
+  const me = await api("/api/desk/me?owner=" + encodeURIComponent(pubkey));
+  deskAddr = me.address || me.user?.deskAddress || deskAddr;
+  $("deskaddr").textContent = deskAddr || "—";
+  $("myusdc").textContent = money(me.user?.usdc);
+  const h = me.user?.holdings || {};
+  const keys = Object.keys(h);
+  const fills = (me.user?.fills || []).slice().reverse();
+  $("holdings").innerHTML =
+    (keys.length
+      ? keys.map((k) => `<div>${k}  ${Number(h[k].shares).toFixed(6)} sh  cost ${money(h[k].costUsd)}</div>`).join("")
+      : "<div>no stock yet</div>") +
+    (fills.length
+      ? "<div style='margin-top:10px'>" +
+        fills
+          .map(
+            (f) =>
+              `<div>${f.side} ${f.ticker}  ${money(f.usd)}  ${Number(f.shares).toFixed(6)} sh  ${f.tx ? String(f.tx).slice(0, 8) + "…" : ""}</div>`,
+          )
+          .join("") +
+        "</div>"
+      : "");
+  armed = (me.arms || []).some((a) => a.armed && a.ticker === $("ticker").value);
+  $("arm").textContent = armed ? "Armed — desk will fill" : "Arm desk";
+}
+
+$("copydesk").onclick = async () => {
+  if (!deskAddr) await loadDesk();
+  if (!deskAddr) return;
+  await navigator.clipboard.writeText(deskAddr);
+  log("desk USDC address copied");
+};
+$("scandeposit").onclick = async () => {
+  if (!pubkey) { log("connect wallet first"); return; }
+  const rows = await api("/api/desk/scan", { method: "POST", body: { owner: pubkey } });
+  log(rows.length ? "credited " + rows.length + " deposit(s)" : "no new deposits");
+  await loadMe();
+};
+$("exportkey").onclick = async () => {
+  if (!pubkey || !session) { log("connect wallet first"); return; }
+  try {
+    const message = "MarkFill export desk key for " + pubkey + " ts=" + Date.now();
+    const signature = await signMessage(session, message);
+    const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey, message, signature } });
+    await navigator.clipboard.writeText(out.secret);
+    log("desk key copied. Address " + out.address + " — save it. It will not change.");
+  } catch (e) {
+    log(e.message);
+  }
+};
+$("refreshme").onclick = () => loadMe();
+$("wdusdc").onclick = async () => {
+  if (!pubkey) { log("connect wallet first"); return; }
+  try {
+    const r = await api("/api/desk/withdraw", {
+      method: "POST",
+      body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value) },
+    });
+    log("withdraw USDC " + (r.signature || ""));
+    await loadMe();
+  } catch (e) { log(e.message); }
+};
+$("wdtok").onclick = async () => {
+  if (!pubkey) { log("connect wallet first"); return; }
+  try {
+    const r = await api("/api/desk/withdraw", {
+      method: "POST",
+      body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value) },
+    });
+    log("withdraw stock " + (r.signature || ""));
+    await loadMe();
+  } catch (e) { log(e.message); }
+};
+
 async function loadFills() {
   const rows = await api("/api/receipts");
   $("fills").innerHTML = rows.length
@@ -454,6 +599,7 @@ async function loadFills() {
 }
 
 await loadStocks();
+await loadDesk();
 await refreshTape();
 setInterval(refreshTape, 8000);
 </script>

@@ -229,6 +229,28 @@ export async function signAndSend(session, tx) {
   throw new Error("wallet connected but cannot sign. Use MetaMask’s Solana account, Jupiter, Phantom, or Solflare.");
 }
 
+export async function signMessage(session, text) {
+  if (!session) throw new Error("connect wallet first");
+  const bytes = new TextEncoder().encode(text);
+  if (session.mode === "standard") {
+    const feat = session.wallet.features["solana:signMessage"];
+    if (!feat) throw new Error("this wallet cannot sign a message");
+    const out = await feat.signMessage({ account: session.account, message: bytes });
+    const row = Array.isArray(out) ? out[0] : out;
+    const sig = row?.signature;
+    if (!sig) throw new Error("no signature");
+    const { default: bs58 } = await import("https://esm.sh/bs58@6.0.0");
+    return typeof sig === "string" ? sig : bs58.encode(sig);
+  }
+  const p = session.provider;
+  if (typeof p.signMessage !== "function") throw new Error("this wallet cannot sign a message");
+  const out = await p.signMessage(bytes, "utf8");
+  const sig = out?.signature || out;
+  if (typeof sig === "string") return sig;
+  const { default: bs58 } = await import("https://esm.sh/bs58@6.0.0");
+  return bs58.encode(sig);
+}
+
 export function bootStandard(onChange) {
   return import("https://esm.sh/@wallet-standard/app@1.1.0")
     .then((mod) => {

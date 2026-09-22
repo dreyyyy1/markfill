@@ -8,6 +8,8 @@ import { buildTape } from "./lib/tape.js";
 import { buildSwap, quoteTrade } from "./lib/jupiter.js";
 import { lpPlan } from "./lib/meteora.js";
 import { listReceipts, stampTx } from "./lib/receipts.js";
+import { arm, deskTick, exportKey, ingestDeposits, publicDesk, snapshot, withdraw } from "./lib/desk.js";
+import { disarm } from "./lib/ledger.js";
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
 
@@ -93,6 +95,62 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, await stampTx(String(body.id || ""), String(body.tx || "")));
       return;
     }
+    if (url.pathname === "/api/desk" && req.method === "GET") {
+      const owner = String(url.searchParams.get("owner") || "").trim();
+      json(res, 200, await publicDesk(owner || undefined));
+      return;
+    }
+    if (url.pathname === "/api/desk/me" && req.method === "GET") {
+      const owner = String(url.searchParams.get("owner") || "").trim();
+      if (!owner) throw new Error("owner required");
+      json(res, 200, snapshot(owner));
+      return;
+    }
+    if (url.pathname === "/api/desk/scan" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      json(res, 200, await ingestDeposits(body.owner ? String(body.owner) : undefined));
+      return;
+    }
+    if (url.pathname === "/api/desk/export" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      json(res, 200, exportKey(String(body.owner || ""), String(body.message || ""), String(body.signature || "")));
+      return;
+    }
+    if (url.pathname === "/api/desk/arm" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      json(
+        res,
+        200,
+        await arm({
+          owner: String(body.owner || ""),
+          ticker: String(body.ticker || ""),
+          usd: Number(body.usd || 0),
+          bandBps: Number(body.bandBps || 50),
+          side: body.side === "sell" ? "sell" : "buy",
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/api/desk/disarm" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      disarm(String(body.owner || ""), body.ticker ? String(body.ticker) : undefined);
+      json(res, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === "/api/desk/withdraw" && req.method === "POST") {
+      const body = JSON.parse((await readBody(req)) || "{}");
+      json(
+        res,
+        200,
+        await withdraw({
+          owner: String(body.owner || ""),
+          kind: body.kind === "token" ? "token" : "usdc",
+          ticker: body.ticker,
+          amount: Number(body.amount || 0),
+        }),
+      );
+      return;
+    }
     if (url.pathname === "/api/lp") {
       const ticker = url.searchParams.get("ticker") || "AAPL";
       const band = Number(url.searchParams.get("band") || 50);
@@ -118,4 +176,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`MarkFill desk  http://${HOST}:${PORT}`);
+  void deskTick();
+  setInterval(() => void deskTick(), 8000);
 });
