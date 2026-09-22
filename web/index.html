@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MarkFill</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   <style>
     :root {
       --bg: #0c0d0b;
@@ -20,9 +24,11 @@
     html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--mono); }
     body { min-height: 100vh; }
     header {
-      display: flex; justify-content: space-between; align-items: baseline; gap: 16px;
+      display: flex; justify-content: space-between; align-items: center; gap: 16px;
       padding: 18px 22px 12px; border-bottom: 1px solid var(--line);
     }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand img { width: 40px; height: 40px; display: block; border: 1px solid var(--line); }
     h1 { margin: 0; font-size: 15px; letter-spacing: .28em; text-transform: uppercase; color: var(--amber); }
     .tag { color: var(--mute); font-size: 11px; }
     .session { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; border: 1px solid var(--line); padding: 6px 10px; }
@@ -77,9 +83,12 @@
 </head>
 <body>
   <header>
-    <div>
-      <h1>MarkFill</h1>
-      <div class="tag">NYSE · xStock · Ondo · Jupiter Mobile · Phantom · Solflare</div>
+    <div class="brand">
+      <img src="/logo.png" alt="MarkFill" />
+      <div>
+        <h1>MarkFill</h1>
+        <div class="tag">NYSE · xStock · Ondo · Jupiter Mobile · Phantom · Solflare</div>
+      </div>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <span class="session" id="sess">session</span>

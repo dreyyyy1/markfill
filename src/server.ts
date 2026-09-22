@@ -166,7 +166,14 @@ const server = http.createServer(async (req, res) => {
     if (!fs.existsSync(file)) file = path.join(WEB, "index.html");
     const ext = path.extname(file);
     const type =
-      ext === ".html" ? "text/html; charset=utf-8" : ext === ".js" ? "text/javascript" : "text/plain";
+      ext === ".html" ? "text/html; charset=utf-8"
+      : ext === ".js" ? "text/javascript"
+      : ext === ".png" ? "image/png"
+      : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
+      : ext === ".ico" ? "image/x-icon"
+      : ext === ".svg" ? "image/svg+xml"
+      : ext === ".webp" ? "image/webp"
+      : "text/plain";
     res.writeHead(200, { "content-type": type });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
