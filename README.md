@@ -17,53 +17,7 @@ Tokenized stocks trade on Solana while the cash market is closed. Spreads blow o
 
 Pyth is the session clock and the equity symbology. If `PYTH_API_KEY` is set, Hermes also prices `Equity.US.*` and `Crypto.*x/USD`. Without a key, NYSE comes from Yahoo and on-chain from Jupiter — the gate still works.
 
-## Run locally
 
-```powershell
-cd C:\Users\DELL\MarkFill
-npm.cmd install
-npx.cmd tsx src/server.ts
-```
-
-Desk: [http://127.0.0.1:4810](http://127.0.0.1:4810)
-
-Connect a Solana wallet. Start with AAPL, 50 bps, $10.
-
-## Put it online (so other people can use it)
-
-Wallets only work on **localhost** or **HTTPS**. So you need a public `https://` URL, not just your home IP.
-
-### Fast (PC stays on)
-
-With the desk already running on 4810:
-
-```powershell
-npx.cmd --yes localtunnel --port 4810
-```
-
-or Cloudflare:
-
-```powershell
-npx.cmd --yes cloudflared tunnel --url http://127.0.0.1:4810
-```
-
-Share the `https://…` URL it prints. Close the tunnel or shut the PC and the site dies.
-
-### Stays up 24/7 (laptop off)
-
-You cannot do this from this PC. A cloud host runs `npx tsx src/server.ts` and gives you `https://…`.
-
-**Easiest: Render**
-
-1. Create a free GitHub repo and push this `MarkFill` folder (do not commit `.env`).
-2. Go to [render.com](https://render.com) → New → Web Service → connect that repo.
-3. Runtime: Node. Build: `npm install`. Start: `npx tsx src/server.ts`.
-4. Add env `HOST=0.0.0.0`. Render sets `PORT`.
-5. Use a **paid** instance (Starter). The free one sleeps and wallets break.
-
-You get a URL like `https://markfill.onrender.com`. That is what users and Stocklana open. Your laptop can be off.
-
-Railway and Fly.io work the same way. A $5/month VPS (Hetzner / DigitalOcean) is the most reliable if you prefer a normal server.
 
 ## Why Solana
 
