@@ -14,7 +14,9 @@ Tokenized stocks trade on Solana while the cash market is closed. Spreads blow o
 6. **Overnight snap** — if NYSE is closed and the DEX is cheap, shows $ per $100 if it prints cash at the open
 7. **Session LP** — tight Meteora bins while NYSE is open, wider overnight, none when off-tape
 8. **Receipts** — each fill stores NYSE, on-chain, bps, and session at send time
-
+9. **Account** - Once you connect your main wallet, a designated non-custodial wallet is assigned to you as your desk wallet, this is what makes sure you do not have to come and sign any transaction when your order that you arm already wants to fill. Fund the account (usdc and little sol for transanction fee) from your connected wallet , set your amount and stock to buy, and arm. whenever the price is right and fair , it buys automatically for you and you can come back to withdraw back to the connected wallet.
+10. **Log** - This is what displays the output of all your actions. 
+    
 Pyth is the session clock and the equity symbology. If `PYTH_API_KEY` is set, Hermes also prices `Equity.US.*` and `Crypto.*x/USD`. Without a key, NYSE comes from Yahoo and on-chain from Jupiter — the gate still works.
 
 
