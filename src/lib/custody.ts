@@ -20,9 +20,12 @@ import {
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { STOCKS, USDC } from "./stocks.js";
-import { ensureUser, pinDeskWallet } from "./ledger.js";
+import { getPinnedDesk, oid, pinDeskWallet } from "./ledger.js";
 
 const ENV = path.resolve(process.cwd(), ".env");
+const DATA = path.resolve(process.cwd(), "data");
+const MASTER_FILE = path.join(DATA, "master.key");
+const DESKS_FILE = path.join(DATA, "desks.json");
 
 export function rpc() {
   return process.env.SOL_RPC?.trim() || "https://api.mainnet-beta.solana.com";
@@ -36,31 +39,95 @@ export function isLive() {
   return true;
 }
 
-export function ensureMasterSecret(): string {
-  let raw = process.env.MARKFILL_SECRET?.trim();
-  if (raw) return raw;
-  const kp = Keypair.generate();
-  raw = bs58.encode(kp.secretKey);
+function readEnvSecret(): string {
+  const fromProc = process.env.MARKFILL_SECRET?.trim();
+  if (fromProc) return fromProc;
+  try {
+    const text = fs.readFileSync(ENV, "utf8");
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith("MARKFILL_SECRET=")) continue;
+      const v = line.slice("MARKFILL_SECRET=".length).trim();
+      if (v) return v;
+    }
+  } catch {
+    /* no .env */
+  }
+  try {
+    const fromFile = fs.readFileSync(MASTER_FILE, "utf8").trim();
+    if (fromFile) return fromFile;
+  } catch {
+    /* no master file */
+  }
+  return "";
+}
+
+function persistMaster(raw: string) {
   process.env.MARKFILL_SECRET = raw;
   try {
-    const prev = fs.existsSync(ENV) ? fs.readFileSync(ENV, "utf8") : "";
-    if (!prev.includes("MARKFILL_SECRET=")) fs.appendFileSync(ENV, `\nMARKFILL_SECRET=${raw}\n`);
+    fs.mkdirSync(DATA, { recursive: true });
+    fs.writeFileSync(MASTER_FILE, raw);
   } catch {
-    /* set MARKFILL_SECRET on the host */
+    /* ignore */
   }
+  try {
+    let prev = fs.existsSync(ENV) ? fs.readFileSync(ENV, "utf8") : "";
+    if (/^MARKFILL_SECRET=/m.test(prev)) {
+      prev = prev.replace(/^MARKFILL_SECRET=.*$/m, `MARKFILL_SECRET=${raw}`);
+    } else {
+      prev += `\nMARKFILL_SECRET=${raw}\n`;
+    }
+    fs.writeFileSync(ENV, prev);
+  } catch {
+    /* set MARKFILL_SECRET on Render */
+  }
+}
+
+export function ensureMasterSecret(): string {
+  const existing = readEnvSecret();
+  if (existing) {
+    process.env.MARKFILL_SECRET = existing;
+    return existing;
+  }
+  const raw = bs58.encode(Keypair.generate().secretKey);
+  persistMaster(raw);
   return raw;
 }
 
-/** One desk wallet per main wallet. Created once, then the stored key is reused forever. */
+function loadDesks(): Record<string, { address: string; secret: string }> {
+  try {
+    return JSON.parse(fs.readFileSync(DESKS_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveDesks(map: Record<string, { address: string; secret: string }>) {
+  fs.mkdirSync(DATA, { recursive: true });
+  fs.writeFileSync(DESKS_FILE, JSON.stringify(map, null, 2));
+}
+
+/** One desk wallet per connected wallet. Created once, never rotated. */
 export function deskKeypair(owner: string): Keypair {
   if (!owner) throw new Error("owner required");
-  const u = ensureUser(owner);
-  if (u.deskSecret && u.deskAddress) {
-    return Keypair.fromSecretKey(bs58.decode(u.deskSecret));
+  const id = oid(owner);
+  const desks = loadDesks();
+  const pinned = desks[id] || getPinnedDesk(id);
+  if (pinned?.secret) {
+    const kp = Keypair.fromSecretKey(bs58.decode(pinned.secret));
+    if (!desks[id]) {
+      desks[id] = { address: kp.publicKey.toBase58(), secret: pinned.secret };
+      saveDesks(desks);
+    }
+    pinDeskWallet(id, kp.publicKey.toBase58(), pinned.secret);
+    return kp;
   }
-  const seed = createHmac("sha256", ensureMasterSecret()).update(`markfill-desk:${owner}`).digest();
+  const seed = createHmac("sha256", ensureMasterSecret()).update(`markfill-desk:${id}`).digest();
   const kp = Keypair.fromSeed(seed);
-  pinDeskWallet(owner, kp.publicKey.toBase58(), bs58.encode(kp.secretKey));
+  const secret = bs58.encode(kp.secretKey);
+  const address = kp.publicKey.toBase58();
+  desks[id] = { address, secret };
+  saveDesks(desks);
+  pinDeskWallet(id, address, secret);
   return kp;
 }
 

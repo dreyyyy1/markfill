@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PublicKey } from "@solana/web3.js";
+
+export function oid(owner: string) {
+  return new PublicKey(owner.trim()).toBase58();
+}
 
 const FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "data", "ledger.json");
 
@@ -68,27 +73,37 @@ function save(l: Ledger) {
 }
 
 export function ensureUser(owner: string): UserAccount {
+  const id = oid(owner);
   const l = load();
-  if (!l.users[owner]) {
-    l.users[owner] = { owner, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
+  if (!l.users[id]) {
+    l.users[id] = { owner: id, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
     save(l);
   }
-  return l.users[owner];
+  return l.users[id];
 }
 
 /** Pin the desk wallet once. Later calls do not rotate the address or key. */
 export function pinDeskWallet(owner: string, address: string, secret: string) {
+  const id = oid(owner);
   const l = load();
-  if (!l.users[owner]) {
-    l.users[owner] = { owner, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
+  if (!l.users[id]) {
+    l.users[id] = { owner: id, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
   }
-  if (l.users[owner].deskAddress && l.users[owner].deskSecret) {
-    return l.users[owner];
+  if (l.users[id].deskAddress && l.users[id].deskSecret) {
+    return l.users[id];
   }
-  l.users[owner].deskAddress = address;
-  l.users[owner].deskSecret = secret;
+  l.users[id].deskAddress = address;
+  l.users[id].deskSecret = secret;
+  l.users[id].owner = id;
   save(l);
-  return l.users[owner];
+  return l.users[id];
+}
+
+export function getPinnedDesk(owner: string): { address: string; secret: string } | null {
+  const id = oid(owner);
+  const u = load().users[id];
+  if (u?.deskAddress && u?.deskSecret) return { address: u.deskAddress, secret: u.deskSecret };
+  return null;
 }
 
 export function listOwners() {
@@ -107,22 +122,23 @@ export function seenSig(sig: string) {
 }
 
 export function creditDeposit(owner: string, amount: number, sig: string) {
+  const id = oid(owner);
   const l = load();
-  if (l.processed.includes(sig)) return l.users[owner];
-  if (!l.users[owner]) {
-    l.users[owner] = { owner, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
+  if (l.processed.includes(sig)) return l.users[id];
+  if (!l.users[id]) {
+    l.users[id] = { owner: id, usdc: 0, holdings: {}, fills: [], deposits: [], withdrawals: [] };
   }
-  l.users[owner].usdc = Number((l.users[owner].usdc + amount).toFixed(6));
-  l.users[owner].deposits.push({ t: Date.now(), amount, sig });
+  l.users[id].usdc = Number((l.users[id].usdc + amount).toFixed(6));
+  l.users[id].deposits.push({ t: Date.now(), amount, sig });
   l.processed.push(sig);
   l.processed = l.processed.slice(-2000);
   save(l);
-  return l.users[owner];
+  return l.users[id];
 }
 
 export function applyFill(owner: string, fill: UserFill) {
   const l = load();
-  const u = l.users[owner];
+  const u = l.users[oid(owner)];
   if (!u) throw new Error("no desk account");
   if (fill.side === "buy") {
     if (u.usdc + 1e-9 < fill.usd) throw new Error("not enough USDC on the desk");
@@ -149,7 +165,7 @@ export function applyFill(owner: string, fill: UserFill) {
 
 export function debitWithdraw(owner: string, kind: string, amount: number, ticker: string | undefined, sig: string) {
   const l = load();
-  const u = l.users[owner];
+  const u = l.users[oid(owner)];
   if (!u) throw new Error("no desk account");
   if (kind === "usdc") {
     if (u.usdc + 1e-9 < amount) throw new Error("not enough USDC on the desk");
@@ -171,10 +187,12 @@ export function debitWithdraw(owner: string, kind: string, amount: number, ticke
 
 export function setArm(order: ArmOrder) {
   const l = load();
-  l.arms = l.arms.filter((a) => !(a.owner === order.owner && a.ticker === order.ticker && a.side === order.side));
-  if (order.armed) l.arms.push(order);
+  const owner = oid(order.owner);
+  const pinned = { ...order, owner };
+  l.arms = l.arms.filter((a) => !(a.owner === owner && a.ticker === order.ticker && a.side === order.side));
+  if (pinned.armed) l.arms.push(pinned);
   save(l);
-  return order;
+  return pinned;
 }
 
 export function listArms() {
@@ -182,11 +200,13 @@ export function listArms() {
 }
 
 export function userArms(owner: string) {
-  return load().arms.filter((a) => a.owner === owner);
+  const id = oid(owner);
+  return load().arms.filter((a) => a.owner === id);
 }
 
 export function disarm(owner: string, ticker?: string) {
+  const id = oid(owner);
   const l = load();
-  l.arms = l.arms.filter((a) => a.owner !== owner || (ticker && a.ticker !== ticker));
+  l.arms = l.arms.filter((a) => a.owner !== id || (ticker && a.ticker !== ticker));
   save(l);
 }

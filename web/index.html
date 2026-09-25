@@ -593,11 +593,30 @@ async function refreshLp() {
 $("dolp").onclick = () => withBusy($("dolp"), "Loading…", refreshLp);
 $("openm").onclick = (e) => { press(e.currentTarget); if (lastLp?.meteoraUrl) window.open(lastLp.meteoraUrl, "_blank"); };
 
+function deskCacheKey(owner) {
+  return "markfill.desk." + owner;
+}
+
 async function loadDesk() {
   try {
+    if (pubkey) {
+      const cached = localStorage.getItem(deskCacheKey(pubkey));
+      if (cached) {
+        deskAddr = cached;
+        $("deskaddr").textContent = cached;
+      }
+    }
     const q = pubkey ? "?owner=" + encodeURIComponent(pubkey) : "";
     const d = await api("/api/desk" + q);
-    deskAddr = d.address || "";
+    if (d.address) {
+      if (pubkey && localStorage.getItem(deskCacheKey(pubkey)) && localStorage.getItem(deskCacheKey(pubkey)) !== d.address) {
+        deskAddr = localStorage.getItem(deskCacheKey(pubkey));
+        log("using your saved MarkFill address — it does not change");
+      } else {
+        deskAddr = d.address;
+        if (pubkey) localStorage.setItem(deskCacheKey(pubkey), d.address);
+      }
+    }
     $("deskaddr").textContent = deskAddr || (pubkey ? "—" : "connect to see your address");
     if (d.sol != null) $("mysol").textContent = Number(d.sol).toFixed(4) + " SOL";
     if (d.usdc != null) $("myusdc").textContent = money(d.usdc);
@@ -615,7 +634,9 @@ async function loadMe() {
     return;
   }
   const me = await api("/api/desk/me?owner=" + encodeURIComponent(pubkey));
-  deskAddr = me.address || me.user?.deskAddress || deskAddr;
+  const pinned = (pubkey && localStorage.getItem(deskCacheKey(pubkey))) || "";
+  deskAddr = pinned || me.address || me.user?.deskAddress || deskAddr;
+  if (pubkey && deskAddr) localStorage.setItem(deskCacheKey(pubkey), deskAddr);
   $("deskaddr").textContent = deskAddr || "—";
   const chain = me.balances || {};
   $("mysol").textContent = chain.sol != null ? Number(chain.sol).toFixed(4) + " SOL" : "—";

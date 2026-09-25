@@ -3,3 +3,5 @@ dist/
 .env
 *.log
 data/*.json
+data/master.key
+data/desks.json
