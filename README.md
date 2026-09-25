@@ -10,7 +10,7 @@ Tokenized stocks trade on Solana while the cash market is closed. Spreads blow o
 2. **Board** — every name ranked cheapest vs cash. After-hours book.
 3. **Buy cheap / fair** — Jupiter buy only if the token is inside the band or discounted to NYSE
 4. **Sell rich** — Jupiter sell only if the token is rich vs NYSE
-5. **Arm wait** — leave the tab open; when the name comes back cheap or fair, the buy sends
+5. **Arm wait** — Arm your buy position with your size when you can not wait on screen for the price to be right,when the name comes back cheap or fair, the buy sends from your desk wallet on Markfill.
 6. **Overnight snap** — if NYSE is closed and the DEX is cheap, shows $ per $100 if it prints cash at the open
 7. **Session LP** — tight Meteora bins while NYSE is open, wider overnight, none when off-tape
 8. **Receipts** — each fill stores NYSE, on-chain, bps, and session at send time
