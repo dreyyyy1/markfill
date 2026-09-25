@@ -3,7 +3,6 @@ import { buildTape } from "./tape.js";
 import { receiptFromTape } from "./receipts.js";
 
 const JUP = "https://lite-api.jup.ag/swap/v1";
-export const MIN_TRADE_USD = 10;
 
 export async function quoteTrade(opts: {
   ticker: string;
@@ -15,9 +14,7 @@ export async function quoteTrade(opts: {
   const stock = stockByTicker(opts.ticker);
   if (!stock) throw new Error("unknown ticker");
   const usd = Number(opts.usd);
-  if (!(usd >= MIN_TRADE_USD)) {
-    throw new Error(`minimum trade is $${MIN_TRADE_USD} USDC`);
-  }
+  if (!(usd > 0)) throw new Error("enter an amount greater than 0");
   const tape = await buildTape(stock.ticker, opts.bandBps);
   const allowed =
     opts.side === "buy"
