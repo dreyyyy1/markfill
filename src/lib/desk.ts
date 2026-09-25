@@ -64,6 +64,8 @@ async function hotSwap(opts: { ticker: string; usd: number; bandBps: number; sid
       userPublicKey: kp.publicKey.toBase58(),
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
+      dynamicSlippage: { minBps: 50, maxBps: 300 },
+      prioritizationFeeLamports: "auto",
     }),
     signal: AbortSignal.timeout(20_000),
   });
@@ -96,7 +98,7 @@ export async function arm(order: Omit<ArmOrder, "createdAt" | "armed"> & { armed
   const stock = stockByTicker(order.ticker);
   if (!stock) throw new Error("unknown ticker");
   const usd = Number(order.usd);
-  if (!(usd > 0)) throw new Error("size must be > 0");
+  if (!(usd >= 10)) throw new Error("minimum Arm size is $10 USDC");
   const u = getUser(owner);
   if (order.side === "buy" && u.usdc + 1e-9 < usd) {
     throw new Error(`desk balance is $${u.usdc.toFixed(2)} USDC — deposit first`);

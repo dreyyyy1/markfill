@@ -3,6 +3,7 @@ import { buildTape } from "./tape.js";
 import { receiptFromTape } from "./receipts.js";
 
 const JUP = "https://lite-api.jup.ag/swap/v1";
+export const MIN_TRADE_USD = 10;
 
 export async function quoteTrade(opts: {
   ticker: string;
@@ -13,7 +14,10 @@ export async function quoteTrade(opts: {
 }) {
   const stock = stockByTicker(opts.ticker);
   if (!stock) throw new Error("unknown ticker");
-  const usd = Math.max(1, opts.usd);
+  const usd = Number(opts.usd);
+  if (!(usd >= MIN_TRADE_USD)) {
+    throw new Error(`minimum trade is $${MIN_TRADE_USD} USDC`);
+  }
   const tape = await buildTape(stock.ticker, opts.bandBps);
   const allowed =
     opts.side === "buy"
@@ -47,7 +51,8 @@ export async function quoteTrade(opts: {
     inputMint: inMint,
     outputMint: outMint,
     amount: String(amount),
-    slippageBps: String(opts.slippageBps ?? 50),
+    slippageBps: String(opts.slippageBps ?? 100),
+    restrictIntermediateTokens: "true",
   });
   const res = await fetch(`${JUP}/quote?${q}`, { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`jupiter quote ${res.status}: ${await res.text()}`);
@@ -101,6 +106,8 @@ export async function buildSwap(opts: {
       userPublicKey: opts.userPublicKey,
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
+      dynamicSlippage: { minBps: 50, maxBps: 300 },
+      prioritizationFeeLamports: "auto",
     }),
     signal: AbortSignal.timeout(20_000),
   });
