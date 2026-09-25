@@ -103,7 +103,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/desk/me" && req.method === "GET") {
       const owner = String(url.searchParams.get("owner") || "").trim();
       if (!owner) throw new Error("owner required");
-      json(res, 200, snapshot(owner));
+      json(res, 200, await snapshot(owner));
       return;
     }
     if (url.pathname === "/api/desk/scan" && req.method === "POST") {

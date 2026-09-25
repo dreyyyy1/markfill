@@ -19,7 +19,7 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
-import { USDC } from "./stocks.js";
+import { STOCKS, USDC } from "./stocks.js";
 import { ensureUser, pinDeskWallet } from "./ledger.js";
 
 const ENV = path.resolve(process.cwd(), ".env");
@@ -110,6 +110,32 @@ export async function deskInfo(owner?: string) {
     usdc,
     note: "This address is only yours. Send USDC plus a little SOL for fees. Export the key if you want to control it in Phantom.",
   };
+}
+
+export async function onchainBalances(owner: string) {
+  const kp = deskKeypair(owner);
+  const conn = connection();
+  const sol = (await conn.getBalance(kp.publicKey)) / 1e9;
+  let usdc = 0;
+  try {
+    const { ata, program } = await ataFor(USDC, kp.publicKey);
+    const acc = await getAccount(conn, ata, "confirmed", program);
+    usdc = Number(acc.amount) / 1e6;
+  } catch {
+    usdc = 0;
+  }
+  const stocks: { ticker: string; xSymbol: string; shares: number }[] = [];
+  for (const s of STOCKS) {
+    try {
+      const { ata, program } = await ataFor(s.mint, kp.publicKey);
+      const acc = await getAccount(conn, ata, "confirmed", program);
+      const shares = Number(acc.amount) / 10 ** s.decimals;
+      if (shares > 0) stocks.push({ ticker: s.ticker, xSymbol: s.xSymbol, shares });
+    } catch {
+      /* no account yet */
+    }
+  }
+  return { sol, usdc, stocks };
 }
 
 async function ensureAta(owner: PublicKey, mint: string, payer: Keypair) {

@@ -21,6 +21,7 @@ import {
   deskKeypair,
   exportDeskSecret,
   isLive,
+  onchainBalances,
   scanUsdcDeposits,
   sendTokens,
   verifyOwnerSignature,
@@ -170,12 +171,14 @@ export async function withdraw(opts: { owner: string; kind: "usdc" | "token"; ti
   return { ...sent, user: next };
 }
 
-export function snapshot(owner: string) {
+export async function snapshot(owner: string) {
   deskKeypair(owner);
   const u = getUser(owner);
+  const chain = await onchainBalances(owner);
   return {
     address: u.deskAddress,
     live: isLive(),
+    balances: chain,
     user: {
       owner: u.owner,
       deskAddress: u.deskAddress,

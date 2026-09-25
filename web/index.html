@@ -39,12 +39,17 @@
       cursor: pointer; font: inherit; letter-spacing: .1em; text-transform: uppercase;
       font-size: 11px; padding: 10px 12px; background: transparent; color: var(--amber);
       border: 1px solid var(--amber);
+      transition: background .12s, color .12s, border-color .12s, transform .08s;
     }
     button.ghost { color: var(--mute); border-color: var(--line); }
     button.on { background: var(--amber); color: #1a1408; }
+    button:hover:not(:disabled) { background: #1c1a12; }
+    button:active:not(:disabled), button.pressed { transform: scale(.97); background: var(--amber); color: #1a1408; border-color: var(--amber); }
     button:disabled { opacity: .4; cursor: not-allowed; }
     button.live { background: var(--up); color: #08140c; border-color: var(--up); }
     button.danger { color: var(--down); border-color: var(--down); }
+    button.busy { background: var(--amber); color: #1a1408; border-color: var(--amber); }
+    button.ok { background: var(--up); color: #08140c; border-color: var(--up); }
     main { padding: 16px 22px 40px; display: grid; gap: 16px; max-width: 1180px; }
     .row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
     .hero { display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }
@@ -183,8 +188,8 @@
         <h2>Your MarkFill wallet</h2>
         <div class="kvs">
           <b>Your address</b><span id="deskaddr">—</span>
-          <b>Desk live</b><span id="desklive">—</span>
-          <b>Your USDC</b><span id="myusdc">—</span>
+          <b>SOL</b><span id="mysol">—</span>
+          <b>USDC</b><span id="myusdc">—</span>
         </div>
         <div class="btns" style="grid-template-columns:1fr 1fr 1fr">
           <button class="ghost" id="copydesk">Copy address</button>
@@ -267,6 +272,36 @@ let lastLp = null;
 let armed = false;
 let armBusy = false;
 let deskAddr = "";
+
+function press(btn) {
+  if (!btn) return;
+  btn.classList.add("pressed");
+  setTimeout(() => btn.classList.remove("pressed"), 160);
+}
+
+async function withBusy(btn, busyLabel, fn) {
+  if (!btn) return fn();
+  press(btn);
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.classList.add("busy");
+  if (busyLabel) btn.textContent = busyLabel;
+  try {
+    await fn();
+    btn.classList.remove("busy");
+    btn.classList.add("ok");
+    btn.textContent = "Done";
+    await new Promise((r) => setTimeout(r, 700));
+  } catch (e) {
+    btn.classList.remove("busy");
+    log(e.message || String(e));
+    throw e;
+  } finally {
+    btn.classList.remove("ok");
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
 
 function log(msg) {
   const t = new Date().toISOString().slice(11, 19);
@@ -411,12 +446,14 @@ function clearSession() {
   syncButtons();
 }
 
-$("connect").onclick = () => {
+$("connect").onclick = (e) => {
+  press(e.currentTarget);
   $("jupbox").classList.add("hidden");
   $("wmodal").classList.remove("hidden");
   renderWalletList();
 };
-$("disconnect").onclick = async () => {
+$("disconnect").onclick = async (e) => {
+  press(e.currentTarget);
   await disconnectWallet(session);
   clearSession();
   log("disconnected");
@@ -447,44 +484,44 @@ document.querySelectorAll("nav button").forEach((b) => {
 });
 
 $("ticker").onchange = () => refreshTape();
-$("buy").onclick = () => fire("buy");
-$("sell").onclick = () => fire("sell");
+$("buy").onclick = () => withBusy($("buy"), "Buying…", () => fire("buy"));
+$("sell").onclick = () => withBusy($("sell"), "Selling…", () => fire("sell"));
 $("arm").onclick = async () => {
   if (!pubkey) { log("connect wallet first"); return; }
+  const btn = $("arm");
   try {
-    if (armed) {
-      await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value } });
-      armed = false;
-      $("arm").textContent = "Arm desk";
-      $("armnote").textContent = "Arm is off. Deposit USDC on Account, then Arm again.";
-      log("disarmed");
-      return;
-    }
-    await api("/api/desk/arm", {
-      method: "POST",
-      body: {
-        owner: pubkey,
-        ticker: $("ticker").value,
-        usd: Number($("usd").value),
-        bandBps: Number($("band").value),
-        side: "buy",
-      },
+    await withBusy(btn, armed ? "Stopping…" : "Arming…", async () => {
+      if (armed) {
+        await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value } });
+        armed = false;
+        $("armnote").textContent = "Arm is off. Deposit USDC on Account, then Arm again.";
+        log("disarmed");
+        return;
+      }
+      await api("/api/desk/arm", {
+        method: "POST",
+        body: {
+          owner: pubkey,
+          ticker: $("ticker").value,
+          usd: Number($("usd").value),
+          bandBps: Number($("band").value),
+          side: "buy",
+        },
+      });
+      armed = true;
+      $("armnote").textContent = "MarkFill will buy from your deposited USDC when this name is cheap or fair. No extra wallet popup.";
+      log("armed on desk wallet");
     });
-    armed = true;
-    $("arm").textContent = "Armed — desk will fill";
-    $("armnote").textContent = "MarkFill will buy from your deposited USDC when this name is cheap or fair. No extra wallet popup.";
-    log("armed on desk wallet");
+    btn.textContent = armed ? "Armed — desk will fill" : "Arm desk";
   } catch (e) {
     log(e.message);
+    btn.textContent = armed ? "Armed — desk will fill" : "Arm desk";
   }
 };
 
-$("scan").onclick = async () => {
-  $("scan").disabled = true;
-  $("scan").textContent = "scanning…";
-  try {
-    const data = await api("/api/board?band=" + Number($("band").value || 50));
-    $("board").innerHTML = data.rows.map((r) => `
+$("scan").onclick = () => withBusy($("scan"), "Scanning…", async () => {
+  const data = await api("/api/board?band=" + Number($("band").value || 50));
+  $("board").innerHTML = data.rows.map((r) => `
       <tr>
         <td>${r.ticker} <span class="pill ${r.verdict}">${r.verdict}</span></td>
         <td class="${(r.premiumBps||0) < 0 ? "up" : "down"}">${bps(r.premiumBps)}</td>
@@ -492,10 +529,7 @@ $("scan").onclick = async () => {
         <td>${r.cheapest || "—"}</td>
         <td>${r.play}</td>
       </tr>`).join("");
-  } catch (e) { log(e.message); }
-  $("scan").disabled = false;
-  $("scan").textContent = "Scan all names";
-};
+});
 
 async function refreshLp() {
   lastLp = await api("/api/lp?ticker=" + encodeURIComponent($("ticker").value) + "&band=" + Number($("band").value));
@@ -505,8 +539,8 @@ async function refreshLp() {
   $("lprange").textContent = lastLp.range.fromBinId != null ? lastLp.range.fromBinId + " → " + lastLp.range.toBinId : "—";
   $("lpreason").textContent = lastLp.reason;
 }
-$("dolp").onclick = refreshLp;
-$("openm").onclick = () => { if (lastLp?.meteoraUrl) window.open(lastLp.meteoraUrl, "_blank"); };
+$("dolp").onclick = () => withBusy($("dolp"), "Loading…", refreshLp);
+$("openm").onclick = (e) => { press(e.currentTarget); if (lastLp?.meteoraUrl) window.open(lastLp.meteoraUrl, "_blank"); };
 
 async function loadDesk() {
   try {
@@ -514,7 +548,8 @@ async function loadDesk() {
     const d = await api("/api/desk" + q);
     deskAddr = d.address || "";
     $("deskaddr").textContent = deskAddr || (pubkey ? "—" : "connect to see your address");
-    $("desklive").textContent = "on";
+    if (d.sol != null) $("mysol").textContent = Number(d.sol).toFixed(4) + " SOL";
+    if (d.usdc != null) $("myusdc").textContent = money(d.usdc);
   } catch (e) {
     $("deskaddr").textContent = e.message;
   }
@@ -523,6 +558,7 @@ async function loadDesk() {
 async function loadMe() {
   await loadDesk();
   if (!pubkey) {
+    $("mysol").textContent = "—";
     $("myusdc").textContent = "—";
     $("holdings").textContent = "connect a wallet";
     return;
@@ -530,14 +566,26 @@ async function loadMe() {
   const me = await api("/api/desk/me?owner=" + encodeURIComponent(pubkey));
   deskAddr = me.address || me.user?.deskAddress || deskAddr;
   $("deskaddr").textContent = deskAddr || "—";
-  $("myusdc").textContent = money(me.user?.usdc);
+  const chain = me.balances || {};
+  $("mysol").textContent = chain.sol != null ? Number(chain.sol).toFixed(4) + " SOL" : "—";
+  $("myusdc").textContent = money(chain.usdc != null ? chain.usdc : me.user?.usdc);
   const h = me.user?.holdings || {};
-  const keys = Object.keys(h);
+  const chainStocks = chain.stocks || [];
+  const tickers = [...new Set([...chainStocks.map((s) => s.ticker), ...Object.keys(h)])];
   const fills = (me.user?.fills || []).slice().reverse();
+  const stockRows = tickers.length
+    ? `<table><thead><tr><th>Stock</th><th>On chain</th><th>Cost</th></tr></thead><tbody>` +
+      tickers
+        .map((k) => {
+          const on = chainStocks.find((s) => s.ticker === k);
+          const led = h[k];
+          return `<tr><td>${on?.xSymbol || k}</td><td>${Number(on?.shares ?? led?.shares ?? 0).toFixed(6)}</td><td>${led ? money(led.costUsd) : "—"}</td></tr>`;
+        })
+        .join("") +
+      `</tbody></table>`
+    : "<div>no stock yet</div>";
   $("holdings").innerHTML =
-    (keys.length
-      ? keys.map((k) => `<div>${k}  ${Number(h[k].shares).toFixed(6)} sh  cost ${money(h[k].costUsd)}</div>`).join("")
-      : "<div>no stock yet</div>") +
+    stockRows +
     (fills.length
       ? "<div style='margin-top:10px'>" +
         fills
@@ -552,53 +600,45 @@ async function loadMe() {
   $("arm").textContent = armed ? "Armed — desk will fill" : "Arm desk";
 }
 
-$("copydesk").onclick = async () => {
+$("copydesk").onclick = () => withBusy($("copydesk"), "Copying…", async () => {
   if (!deskAddr) await loadDesk();
-  if (!deskAddr) return;
+  if (!deskAddr) throw new Error("no address yet");
   await navigator.clipboard.writeText(deskAddr);
-  log("desk USDC address copied");
-};
-$("scandeposit").onclick = async () => {
-  if (!pubkey) { log("connect wallet first"); return; }
+  log("desk address copied");
+});
+$("scandeposit").onclick = () => withBusy($("scandeposit"), "Scanning…", async () => {
+  if (!pubkey) throw new Error("connect wallet first");
   const rows = await api("/api/desk/scan", { method: "POST", body: { owner: pubkey } });
   log(rows.length ? "credited " + rows.length + " deposit(s)" : "no new deposits");
   await loadMe();
-};
-$("exportkey").onclick = async () => {
-  if (!pubkey || !session) { log("connect wallet first"); return; }
-  try {
-    const message = "MarkFill export desk key for " + pubkey + " ts=" + Date.now();
-    const signature = await signMessage(session, message);
-    const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey, message, signature } });
-    await navigator.clipboard.writeText(out.secret);
-    log("desk key copied. Address " + out.address + " — save it. It will not change.");
-  } catch (e) {
-    log(e.message);
-  }
-};
-$("refreshme").onclick = () => loadMe();
-$("wdusdc").onclick = async () => {
-  if (!pubkey) { log("connect wallet first"); return; }
-  try {
-    const r = await api("/api/desk/withdraw", {
-      method: "POST",
-      body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value) },
-    });
-    log("withdraw USDC " + (r.signature || ""));
-    await loadMe();
-  } catch (e) { log(e.message); }
-};
-$("wdtok").onclick = async () => {
-  if (!pubkey) { log("connect wallet first"); return; }
-  try {
-    const r = await api("/api/desk/withdraw", {
-      method: "POST",
-      body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value) },
-    });
-    log("withdraw stock " + (r.signature || ""));
-    await loadMe();
-  } catch (e) { log(e.message); }
-};
+});
+$("exportkey").onclick = () => withBusy($("exportkey"), "Signing…", async () => {
+  if (!pubkey || !session) throw new Error("connect wallet first");
+  const message = "MarkFill export desk key for " + pubkey + " ts=" + Date.now();
+  const signature = await signMessage(session, message);
+  const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey, message, signature } });
+  await navigator.clipboard.writeText(out.secret);
+  log("desk key copied. Address " + out.address + " — save it. It will not change.");
+});
+$("refreshme").onclick = () => withBusy($("refreshme"), "Refreshing…", loadMe);
+$("wdusdc").onclick = () => withBusy($("wdusdc"), "Sending…", async () => {
+  if (!pubkey) throw new Error("connect wallet first");
+  const r = await api("/api/desk/withdraw", {
+    method: "POST",
+    body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value) },
+  });
+  log("withdraw USDC " + (r.signature || ""));
+  await loadMe();
+});
+$("wdtok").onclick = () => withBusy($("wdtok"), "Sending…", async () => {
+  if (!pubkey) throw new Error("connect wallet first");
+  const r = await api("/api/desk/withdraw", {
+    method: "POST",
+    body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value) },
+  });
+  log("withdraw stock " + (r.signature || ""));
+  await loadMe();
+});
 
 async function loadFills() {
   const rows = await api("/api/receipts");
