@@ -83,6 +83,11 @@
     .modal-card { background: var(--paper); border: 1px solid var(--line); max-width: 420px; width: 100%; padding: 18px; }
     .wlist { display: grid; gap: 8px; margin-top: 12px; }
     .wlist button { text-align: left; letter-spacing: .06em; }
+    .secret {
+      word-break: break-all; user-select: all; -webkit-user-select: all;
+      background: #080906; border: 1px solid var(--line); padding: 10px; font-size: 12px;
+      margin: 8px 0 12px; color: var(--ink);
+    }
     @media (max-width: 900px) { .hero, .row, .btns { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -260,6 +265,18 @@
       <button class="ghost" id="wclose" style="margin-top:12px;width:100%">Close</button>
     </div>
   </div>
+  <div class="modal hidden" id="keymodal">
+    <div class="modal-card">
+      <h2>Your desk key</h2>
+      <p class="note">Long-press the text to copy. Phones often block auto-copy.</p>
+      <label>Address</label>
+      <div class="secret" id="keyaddr"></div>
+      <label>Private key</label>
+      <div class="secret" id="keysecret"></div>
+      <button class="ghost" id="copykey" style="width:100%">Try copy key</button>
+      <button class="ghost" id="keyclose" style="margin-top:8px;width:100%">Close</button>
+    </div>
+  </div>
 <script type="module">
 import { VersionedTransaction } from "https://esm.sh/@solana/web3.js@1.98.4";
 import { bootStandard, discoverWallets, connectWallet, disconnectWallet, signAndSend, signMessage } from "./wallets.js";
@@ -301,6 +318,36 @@ async function withBusy(btn, busyLabel, fn) {
     btn.disabled = false;
     btn.textContent = orig;
   }
+}
+
+async function copyText(text) {
+  if (!text) throw new Error("nothing to copy");
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  if (!ok) throw new Error("auto-copy blocked on this phone — long-press the key to copy");
+  return true;
 }
 
 function log(msg) {
@@ -460,8 +507,12 @@ $("disconnect").onclick = async (e) => {
 };
 $("wclose").onclick = () => $("wmodal").classList.add("hidden");
 $("copyurl").onclick = async () => {
-  await navigator.clipboard.writeText(window.location.href);
-  log("desk URL copied — paste into Jupiter Mobile globe");
+  try {
+    await copyText(window.location.href);
+    log("desk URL copied — paste into Jupiter Mobile globe");
+  } catch {
+    log("auto-copy blocked — copy the URL from the address bar");
+  }
 };
 
 bootStandard(() => {
@@ -603,8 +654,12 @@ async function loadMe() {
 $("copydesk").onclick = () => withBusy($("copydesk"), "Copying…", async () => {
   if (!deskAddr) await loadDesk();
   if (!deskAddr) throw new Error("no address yet");
-  await navigator.clipboard.writeText(deskAddr);
-  log("desk address copied");
+  try {
+    await copyText(deskAddr);
+    log("desk address copied");
+  } catch {
+    log("auto-copy blocked — long-press the address");
+  }
 });
 $("scandeposit").onclick = () => withBusy($("scandeposit"), "Scanning…", async () => {
   if (!pubkey) throw new Error("connect wallet first");
@@ -617,9 +672,22 @@ $("exportkey").onclick = () => withBusy($("exportkey"), "Signing…", async () =
   const message = "MarkFill export desk key for " + pubkey + " ts=" + Date.now();
   const signature = await signMessage(session, message);
   const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey, message, signature } });
-  await navigator.clipboard.writeText(out.secret);
-  log("desk key copied. Address " + out.address + " — save it. It will not change.");
+  $("keyaddr").textContent = out.address || "";
+  $("keysecret").textContent = out.secret || "";
+  $("keymodal").classList.remove("hidden");
+  try {
+    await copyText(out.secret);
+    log("desk key shown. Copied if this phone allowed it.");
+  } catch {
+    log("desk key shown. Long-press the private key to copy — phones often block auto-copy.");
+  }
 });
+$("copykey").onclick = () => withBusy($("copykey"), "Copying…", async () => {
+  const secret = $("keysecret").textContent;
+  await copyText(secret);
+  log("desk key copied");
+});
+$("keyclose").onclick = () => $("keymodal").classList.add("hidden");
 $("refreshme").onclick = () => withBusy($("refreshme"), "Refreshing…", loadMe);
 $("wdusdc").onclick = () => withBusy($("wdusdc"), "Sending…", async () => {
   if (!pubkey) throw new Error("connect wallet first");
