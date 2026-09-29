@@ -1,0 +1,19 @@
+[toolchain]
+anchor_version = "0.31.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+markfill_vault = "CYJsEDDTrZQ9zRjPfUrKAawjRfvofH7afeeTPVNHrrsw"
+
+[programs.mainnet]
+markfill_vault = "CYJsEDDTrZQ9zRjPfUrKAawjRfvofH7afeeTPVNHrrsw"
+
+[provider]
+cluster = "mainnet"
+wallet = "~/.config/solana/id.json"
+
+[workspace]
+members = ["programs/markfill_vault"]

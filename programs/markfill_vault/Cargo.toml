@@ -1,0 +1,20 @@
+[package]
+name = "markfill-vault"
+version = "0.1.0"
+description = "Non-custodial MarkFill vault: PDA funds, user-signed deposit/arm/withdraw, permissionless fill with on-chain Pyth gate"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "markfill_vault"
+
+[features]
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+default = []
+
+[dependencies]
+anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+anchor-spl = "0.31.1"
+pyth-solana-receiver-sdk = "0.6.1"

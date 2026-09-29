@@ -1,5 +1,9 @@
 # MarkFill
 
+> **Trust model today:** the live TypeScript desk is still custodial (derived desk wallets).  
+> **In progress:** `programs/markfill_vault` is a PDA vault program (Phase 1). It is **not** wired to the website yet. Do not treat MarkFill as non-custodial until the vault is deployed, the keeper only submits `execute_fill`, and old desk keys are swept.
+
+
 Stocklana submission: a 24/7 xStock desk that **refuses to buy or LP** when the on-chain token is off the NYSE tape.
 
 Tokenized stocks trade on Solana while the cash market is closed. Spreads blow out. People buy AAPL 3% rich on a Sunday. LPs get picked off. MarkFill is the gate.
