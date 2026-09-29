@@ -9,7 +9,7 @@ import { buildSwap, quoteTrade } from "./lib/jupiter.js";
 import { lpPlan } from "./lib/meteora.js";
 import { listReceipts, stampTx } from "./lib/receipts.js";
 import { arm, deskTick, exportKey, ingestDeposits, publicDesk, snapshot, withdraw } from "./lib/desk.js";
-import { disarm } from "./lib/ledger.js";
+import { disarm, listDeskPublic } from "./lib/ledger.js";
 import { requireOwnerSig } from "./lib/auth.js";
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
@@ -94,6 +94,10 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/receipts/tx" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
       json(res, 200, await stampTx(String(body.id || ""), String(body.tx || "")));
+      return;
+    }
+    if (url.pathname === "/api/desk/owners" && req.method === "GET") {
+      json(res, 200, { owners: listDeskPublic() });
       return;
     }
     if (url.pathname === "/api/desk" && req.method === "GET") {

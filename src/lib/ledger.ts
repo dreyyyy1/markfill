@@ -113,6 +113,14 @@ export function listOwners() {
   return [...new Set([...fromUsers, ...fromArms])];
 }
 
+export function listDeskPublic() {
+  const l = load();
+  return listOwners().map((owner) => ({
+    owner,
+    address: l.users[owner]?.deskAddress || null,
+  }));
+}
+
 export function getUser(owner: string): UserAccount {
   return ensureUser(owner);
 }
