@@ -1,7 +1,7 @@
 # MarkFill
 
-> **Trust model today:** the live TypeScript desk is still custodial (derived desk wallets).  
-> **In progress:** `programs/markfill_vault` is a PDA vault program (Phase 1). It is **not** wired to the website yet. Do not treat MarkFill as non-custodial until the vault is deployed, the keeper only submits `execute_fill`, and old desk keys are swept.
+> **Trust model today:** the live website is still custodial (HMAC desk wallets) so Arm can fire.  
+> **Shipped in repo:** PDA vault program + TS client (`src/lib/vault.ts`) + signed APIs + sweep script. Not live until `anchor deploy`, `MARKFILL_VAULT_PROGRAM` is set, and `npx tsx scripts/sweep-custodial.ts --live` has returned old desk funds. See SECURITY.md.
 
 
 Stocklana submission: a 24/7 xStock desk that **refuses to buy or LP** when the on-chain token is off the NYSE tape.

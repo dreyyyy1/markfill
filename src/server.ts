@@ -10,6 +10,7 @@ import { lpPlan } from "./lib/meteora.js";
 import { listReceipts, stampTx } from "./lib/receipts.js";
 import { arm, deskTick, exportKey, ingestDeposits, publicDesk, snapshot, withdraw } from "./lib/desk.js";
 import { disarm } from "./lib/ledger.js";
+import { requireOwnerSig } from "./lib/auth.js";
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
 
@@ -113,16 +114,22 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/desk/export" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
-      json(res, 200, exportKey(String(body.owner || ""), String(body.message || ""), String(body.signature || "")));
+      json(res, 200, await exportKey(String(body.owner || "")));
       return;
     }
     if (url.pathname === "/api/desk/arm" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
+      const owner = requireOwnerSig({
+        owner: String(body.owner || ""),
+        message: String(body.message || ""),
+        signature: String(body.signature || ""),
+        action: "arm",
+      });
       json(
         res,
         200,
         await arm({
-          owner: String(body.owner || ""),
+          owner,
           ticker: String(body.ticker || ""),
           usd: Number(body.usd || 0),
           bandBps: Number(body.bandBps || 50),
@@ -133,17 +140,29 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/desk/disarm" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
-      disarm(String(body.owner || ""), body.ticker ? String(body.ticker) : undefined);
+      const owner = requireOwnerSig({
+        owner: String(body.owner || ""),
+        message: String(body.message || ""),
+        signature: String(body.signature || ""),
+        action: "disarm",
+      });
+      disarm(owner, body.ticker ? String(body.ticker) : undefined);
       json(res, 200, { ok: true });
       return;
     }
     if (url.pathname === "/api/desk/withdraw" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
+      const owner = requireOwnerSig({
+        owner: String(body.owner || ""),
+        message: String(body.message || ""),
+        signature: String(body.signature || ""),
+        action: "withdraw",
+      });
       json(
         res,
         200,
         await withdraw({
-          owner: String(body.owner || ""),
+          owner,
           kind: body.kind === "token" ? "token" : "usdc",
           ticker: body.ticker,
           amount: Number(body.amount || 0),

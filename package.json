@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx tests/band.test.ts",
+    "check-secrets": "node scripts/check-no-secrets.mjs",
+    "sweep": "tsx scripts/sweep-custodial.ts --dry-run"
   },
   "engines": {
     "node": ">=20"

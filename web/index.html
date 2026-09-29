@@ -543,12 +543,16 @@ $("arm").onclick = async () => {
   try {
     await withBusy(btn, armed ? "Stopping…" : "Arming…", async () => {
       if (armed) {
-        await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value } });
+        const message = "MarkFill disarm " + pubkey + " ts=" + Date.now();
+        const signature = await signMessage(session, message);
+        await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value, message, signature } });
         armed = false;
         $("armnote").textContent = "Arm is off. Deposit USDC on Account, then Arm again.";
         log("disarmed");
         return;
       }
+      const message = "MarkFill arm " + pubkey + " ts=" + Date.now();
+      const signature = await signMessage(session, message);
       await api("/api/desk/arm", {
         method: "POST",
         body: {
@@ -557,6 +561,8 @@ $("arm").onclick = async () => {
           usd: Number($("usd").value),
           bandBps: Number($("band").value),
           side: "buy",
+          message,
+          signature,
         },
       });
       armed = true;
@@ -688,20 +694,13 @@ $("scandeposit").onclick = () => withBusy($("scandeposit"), "Scanning…", async
   log(rows.length ? "credited " + rows.length + " deposit(s)" : "no new deposits");
   await loadMe();
 });
-$("exportkey").onclick = () => withBusy($("exportkey"), "Signing…", async () => {
-  if (!pubkey || !session) throw new Error("connect wallet first");
-  const message = "MarkFill export desk key for " + pubkey + " ts=" + Date.now();
-  const signature = await signMessage(session, message);
-  const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey, message, signature } });
-  $("keyaddr").textContent = out.address || "";
-  $("keysecret").textContent = out.secret || "";
+$("exportkey").onclick = () => withBusy($("exportkey"), "Loading…", async () => {
+  if (!pubkey) throw new Error("connect wallet first");
+  const out = await api("/api/desk/export", { method: "POST", body: { owner: pubkey } });
+  $("keyaddr").textContent = out.address || out.vaultPda || "";
+  $("keysecret").textContent = out.note || "no private key";
   $("keymodal").classList.remove("hidden");
-  try {
-    await copyText(out.secret);
-    log("desk key shown. Copied if this phone allowed it.");
-  } catch {
-    log("desk key shown. Long-press the private key to copy — phones often block auto-copy.");
-  }
+  log(out.note || "vault address shown");
 });
 $("copykey").onclick = () => withBusy($("copykey"), "Copying…", async () => {
   const secret = $("keysecret").textContent;
@@ -711,19 +710,23 @@ $("copykey").onclick = () => withBusy($("copykey"), "Copying…", async () => {
 $("keyclose").onclick = () => $("keymodal").classList.add("hidden");
 $("refreshme").onclick = () => withBusy($("refreshme"), "Refreshing…", loadMe);
 $("wdusdc").onclick = () => withBusy($("wdusdc"), "Sending…", async () => {
-  if (!pubkey) throw new Error("connect wallet first");
+  if (!pubkey || !session) throw new Error("connect wallet first");
+  const message = "MarkFill withdraw " + pubkey + " ts=" + Date.now();
+  const signature = await signMessage(session, message);
   const r = await api("/api/desk/withdraw", {
     method: "POST",
-    body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value) },
+    body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value), message, signature },
   });
   log("withdraw USDC " + (r.signature || ""));
   await loadMe();
 });
 $("wdtok").onclick = () => withBusy($("wdtok"), "Sending…", async () => {
-  if (!pubkey) throw new Error("connect wallet first");
+  if (!pubkey || !session) throw new Error("connect wallet first");
+  const message = "MarkFill withdraw " + pubkey + " ts=" + Date.now();
+  const signature = await signMessage(session, message);
   const r = await api("/api/desk/withdraw", {
     method: "POST",
-    body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value) },
+    body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value), message, signature },
   });
   log("withdraw stock " + (r.signature || ""));
   await loadMe();

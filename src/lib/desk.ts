@@ -24,15 +24,35 @@ import {
   onchainBalances,
   scanUsdcDeposits,
   sendTokens,
-  verifyOwnerSignature,
 } from "./custody.js";
 import { USDC, stockByTicker } from "./stocks.js";
+import { oid, vaultMode } from "./auth.js";
+import { txToB64, vaultUsdcAta, withdrawIx } from "./vault.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
+import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 const JUP = "https://lite-api.jup.ag/swap/v1";
 
 export async function publicDesk(owner?: string) {
-  const info = await deskInfo(owner);
-  return info;
+  if (!vaultMode()) return deskInfo(owner);
+  if (!owner) {
+    return {
+      live: true,
+      perUser: true,
+      vault: true,
+      note: "Connect your wallet. Your vault is a PDA only you can withdraw from.",
+    };
+  }
+  const user = new PublicKey(oid(owner));
+  const { vault, ata } = await vaultUsdcAta(user);
+  return {
+    live: true,
+    perUser: true,
+    vault: true,
+    address: ata.toBase58(),
+    vaultPda: vault.toBase58(),
+    note: "This ATA is owned by your vault PDA. You sign deposit, arm, and withdraw. The keeper cannot steal.",
+  };
 }
 
 export async function ingestDeposits(owner?: string) {
@@ -120,6 +140,9 @@ export async function arm(order: Omit<ArmOrder, "createdAt" | "armed"> & { armed
 }
 
 export async function processArms() {
+  if (vaultMode()) {
+    return [];
+  }
   const out = [];
   for (const a of listArms()) {
     try {
@@ -151,10 +174,21 @@ export async function processArms() {
 }
 
 export async function withdraw(opts: { owner: string; kind: "usdc" | "token"; ticker?: string; amount: number }) {
-  const owner = opts.owner.trim();
+  const owner = oid(opts.owner);
   if (!owner) throw new Error("connect wallet");
   const amount = Number(opts.amount);
   if (!(amount > 0)) throw new Error("amount must be > 0");
+  if (vaultMode()) {
+    const user = new PublicKey(owner);
+    const mint = opts.kind === "usdc" ? new PublicKey(USDC) : new PublicKey(stockByTicker(String(opts.ticker || ""))!.mint);
+    const decimals = opts.kind === "usdc" ? 6 : stockByTicker(String(opts.ticker || ""))!.decimals;
+    const ownerAta = await getAssociatedTokenAddress(mint, user, false, TOKEN_PROGRAM_ID);
+    const ix = await withdrawIx(user, mint, ownerAta, BigInt(Math.round(amount * 10 ** decimals)));
+    const tx = new Transaction().add(ix);
+    tx.feePayer = user;
+    tx.recentBlockhash = (await connection().getLatestBlockhash()).blockhash;
+    return { needsUserSignature: true, transaction: txToB64(tx) };
+  }
   const u = getUser(owner);
   if (opts.kind === "usdc") {
     if (u.usdc + 1e-9 < amount) throw new Error("not enough USDC on the desk");
@@ -172,11 +206,24 @@ export async function withdraw(opts: { owner: string; kind: "usdc" | "token"; ti
 }
 
 export async function snapshot(owner: string) {
-  deskKeypair(owner);
   const u = getUser(owner);
-  const chain = await onchainBalances(owner);
+  const chain = vaultMode()
+    ? await (async () => {
+        const user = new PublicKey(oid(owner));
+        const { vault, ata } = await vaultUsdcAta(user);
+        const conn = connection();
+        let usdc = 0;
+        try {
+          const acc = await conn.getTokenAccountBalance(ata);
+          usdc = Number(acc.value.uiAmount || 0);
+        } catch {
+          usdc = 0;
+        }
+        return { sol: 0, usdc, stocks: [] as { ticker: string; xSymbol: string; shares: number }[], vault: vault.toBase58() };
+      })()
+    : await onchainBalances(owner);
   return {
-    address: u.deskAddress,
+    address: vaultMode() ? (chain as { vault?: string }).vault : u.deskAddress,
     live: isLive(),
     balances: chain,
     user: {
@@ -192,17 +239,15 @@ export async function snapshot(owner: string) {
   };
 }
 
-export function exportKey(owner: string, message: string, signature: string) {
-  if (!owner || !message || !signature) throw new Error("sign the export message with your main wallet");
-  if (!message.includes(owner)) throw new Error("message must name your main wallet");
-  if (!message.startsWith("MarkFill export desk key")) throw new Error("bad export message");
-  const m = message.match(/ts=(\d+)/);
-  const ts = m ? Number(m[1]) : 0;
-  if (!ts || Math.abs(Date.now() - ts) > 5 * 60 * 1000) throw new Error("export message expired — try again");
-  if (!verifyOwnerSignature(owner, message, signature)) throw new Error("signature does not match your main wallet");
+export async function exportKey(owner: string) {
+  if (vaultMode()) {
+    const user = new PublicKey(oid(owner));
+    const { vault, ata } = await vaultUsdcAta(user);
+    return { address: ata.toBase58(), vaultPda: vault.toBase58(), secret: null, note: "no private key — vault is a PDA" };
+  }
   deskKeypair(owner);
   const u = getUser(owner);
-  return { address: u.deskAddress, secret: exportDeskSecret(owner) };
+  return { address: u.deskAddress, secret: null, note: "export of private keys is disabled; use withdraw" };
 }
 
 let busy = false;
