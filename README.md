@@ -34,3 +34,4 @@ Pyth is the session clock and the equity symbology. If `PYTH_API_KEY` is set, He
 Main track: owning/using tokenized stocks better than a brokerage after hours.  
 Pyth bounty: feeds decide whether a trade is allowed.  
 Meteora: LP only when the token is honest vs cash.
+For the unfinished fully non-custodial set-up, at the moment setting program, on-chain storage(fee) is the only constraint which will be implemented as soon as a means (fee) is available.
