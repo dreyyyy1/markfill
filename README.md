@@ -49,8 +49,11 @@ CHEAP → FILL
 
                
                | Normal xStock DEX                             | MarkFill                                  |
+
                
 | --------------------------------------------- | ------------------------------------------ |
+
+
 | Trades whenever liquidity exists              | Trades only inside a defined fairness band |
 | DEX price is the execution reference          | NYSE reference + on-chain execution price  |
 | User must watch the market                    | User can arm an order and walk away        |
