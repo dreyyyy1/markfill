@@ -54,10 +54,15 @@ CHEAP → FILL
 
 
 | Trades whenever liquidity exists              | Trades only inside a defined fairness band |
+
 | DEX price is the execution reference          | NYSE reference + on-chain execution price  |
+
 | User must watch the market                    | User can arm an order and walk away        |
+
 | After-hours spread is the user's problem      | Protocol blocks excessive divergence       |
+
 | LP can be exposed to stale/off-market pricing | LP width follows market session            |
+
 | Execution decision is off-chain               | Designed for on-chain enforcement          |
 
 ## What it does
