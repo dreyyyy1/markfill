@@ -45,25 +45,21 @@ CHEAP → FILL
                    │
                    ▼
                Solana
-               
-               
-               | Normal xStock DEX                          | MarkFill                                  |
+              
 
 
-| --------------------------------------------- | ------------------------------------------ |
+       | Normal xStock DEX                          | MarkFill                                  |
+| Trades whenever liquidity exists                | Trades only inside a defined fairness band |
 
+| DEX price is the execution reference            | NYSE reference + on-chain execution price  |
 
-| Trades whenever liquidity exists              | Trades only inside a defined fairness band |
+| User must watch the market                      | User can arm an order and walk away        |
 
-| DEX price is the execution reference          | NYSE reference + on-chain execution price  |
+| After-hours spread is the user's problem        | Protocol blocks excessive divergence       |
 
-| User must watch the market                    | User can arm an order and walk away        |
+| LP can be exposed to stale/off-market pricing   | LP width follows market session            |
 
-| After-hours spread is the user's problem      | Protocol blocks excessive divergence       |
-
-| LP can be exposed to stale/off-market pricing | LP width follows market session            |
-
-| Execution decision is off-chain               | Designed for on-chain enforcement          |
+| Execution decision is off-chain                 | Designed for on-chain enforcement          |
 
 ## What it does
 
