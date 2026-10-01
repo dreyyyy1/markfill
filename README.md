@@ -47,19 +47,16 @@ CHEAP → FILL
                Solana
               
 
- Normal xStock DEX                                     MarkFill                                  
-| Trades whenever liquidity exists                  | Trades only inside a defined fairness band 
+## Why MarkFill Is Different
 
-| DEX price is the execution reference              | NYSE reference + on-chain execution price  
-
-| User must watch the market                        | User can arm an order and walk away        
-
-| After-hours spread is the user's problem          | Protocol blocks excessive divergence       
-
-| LP can be exposed to stale/off-market pricing     | LP width follows market session            
-
-| Execution decision is off-chain                   | Designed for on-chain enforcement          
-
+| Typical xStock DEX | MarkFill |
+|---|---|
+| Trades whenever liquidity is available | **Trades only when execution is within a defined fairness band** |
+| DEX price is the primary execution reference | **NYSE reference price + on-chain execution price** |
+| User must actively monitor price divergence | **User can arm an order and walk away** |
+| After-hours divergence is left to the trader | **Protocol rejects executions beyond the configured band** |
+| LP exposure can persist during off-market conditions | **LP width/liquidity policy follows the market session** |
+| Execution decision can depend on off-chain infrastructure | **Fairness rules are designed for on-chain enforcement** |
 ## What it does
 
 1. **Triple tape** — NYSE (Pyth equity hours + cash print) vs xStock DEX vs Ondo, when that feed exists
