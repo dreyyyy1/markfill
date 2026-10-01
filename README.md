@@ -46,11 +46,10 @@ CHEAP → FILL
                    ▼
                Solana
                
-
                
-               | Normal xStock DEX                             | MarkFill                                  |
+               | Normal xStock DEX                          | MarkFill                                  |
 
-               
+
 | --------------------------------------------- | ------------------------------------------ |
 
 
@@ -60,7 +59,6 @@ CHEAP → FILL
 | After-hours spread is the user's problem      | Protocol blocks excessive divergence       |
 | LP can be exposed to stale/off-market pricing | LP width follows market session            |
 | Execution decision is off-chain               | Designed for on-chain enforcement          |
-
 
 ## What it does
 
