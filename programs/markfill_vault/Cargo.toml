@@ -18,3 +18,10 @@ default = []
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = "0.31.1"
 pyth-solana-receiver-sdk = "0.6.1"
+
+[dev-dependencies]
+solana-program-test = "2.2"
+solana-sdk = "2.2"
+spl-associated-token-account = { version = "6", features = ["no-entrypoint"] }
+spl-token = { version = "7", features = ["no-entrypoint"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

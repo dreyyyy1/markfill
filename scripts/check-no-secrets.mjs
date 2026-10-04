@@ -4,6 +4,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const skip = new Set(["node_modules", "dist", "data", ".git"]);
 const hits = [];
+const legacy = [];
 
 function walk(dir) {
   for (const name of readdirSync(dir)) {
@@ -14,18 +15,27 @@ function walk(dir) {
       continue;
     }
     if (!/\.(ts|js|mjs|rs)$/.test(name)) continue;
+    // sweep-custodial.ts legitimately holds key material for the one-time sweep.
     if (p.includes("scripts\\sweep-custodial") || p.includes("scripts/sweep-custodial")) continue;
     const text = readFileSync(p, "utf8");
-    if (/Keypair\.fromSecretKey|Keypair\.fromSeed/.test(text)) {
-      if (p.replace(/\\/g, "/").includes("src/lib/custody.ts")) continue;
-      if (p.replace(/\\/g, "/").includes("scripts/sweep-custodial")) continue;
-      hits.push(p.replace(root, "."));
+    if (!/Keypair\.fromSecretKey|Keypair\.fromSeed/.test(text)) continue;
+    const rel = p.replace(root, ".").replace(/\\/g, "/");
+    if (rel.includes("src/lib/custody.ts")) {
+      legacy.push(rel);
+      continue;
     }
+    hits.push(rel);
   }
 }
 
 walk(join(root, "src"));
 walk(join(root, "programs"));
+if (legacy.length) {
+  console.warn(
+    "WARNING: legacy custodial key derivation is still present (tracked, slated for removal after scripts/sweep-custodial.ts is confirmed against production):\n" +
+      legacy.join("\n"),
+  );
+}
 if (hits.length) {
   console.error("secret-material check failed:\n" + hits.join("\n"));
   process.exit(1);

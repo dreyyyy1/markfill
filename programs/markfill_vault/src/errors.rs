@@ -28,4 +28,6 @@ pub enum MarkFillError {
     BadWithdrawDest,
     #[msg("side must be 0 (buy) or 1 (sell)")]
     BadSide,
+    #[msg("fill spent more than the order authorized")]
+    OverspendCap,
 }

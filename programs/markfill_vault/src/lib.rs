@@ -1,7 +1,7 @@
 //! MarkFill vault — PDA custody, user-signed deposit/arm/withdraw,
 //! permissionless execute_fill with on-chain Pyth band check.
 //!
-//! Jupiter CPI program: JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5xQNyVTaV4 (v6 aggregator).
+//! Jupiter CPI program: state::JUPITER_V6.
 //! Pyth: pyth-solana-receiver-sdk PriceUpdateV2 (Solana Core receiver).
 
 use anchor_lang::prelude::*;
@@ -21,11 +21,6 @@ use errors::MarkFillError;
 use state::*;
 
 declare_id!("CYJsEDDTrZQ9zRjPfUrKAawjRfvofH7afeeTPVNHrrsw");
-
-/// Jupiter v6 aggregator — confirmed 2026-09 (JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5xQNyVTaV4).
-fn jupiter_id() -> Pubkey {
-    pubkey!("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
-}
 
 #[program]
 pub mod markfill_vault {
@@ -119,14 +114,20 @@ pub mod markfill_vault {
         require!(!order.filled, MarkFillError::OrderClosed);
         let clock = Clock::get()?;
         require!(clock.unix_timestamp <= order.expiry_ts, MarkFillError::OrderExpired);
-        require_keys_eq!(*ctx.accounts.jupiter_program.key, jupiter_id(), MarkFillError::BadJupiter);
 
         require_keys_eq!(ctx.accounts.vault_usdc.owner, ctx.accounts.vault.key(), MarkFillError::BadSwapAccounts);
         require_keys_eq!(ctx.accounts.vault_stock.owner, ctx.accounts.vault.key(), MarkFillError::BadSwapAccounts);
 
         let nyse_e8 = pyth_e8(&ctx.accounts.pyth_price, &order.pyth_feed_id, &clock)?;
-        let implied_e8 = implied_price_e8(order.side, order.usd_amount, min_out, ctx.accounts.stock_mint.decimals)?;
-        require!(in_band(order.side, implied_e8, nyse_e8, order.band_bps), MarkFillError::OutsideBand);
+        let stock_decimals = ctx.accounts.stock_mint.decimals;
+        let band_bps = order.band_bps;
+        // Buy price is known before the swap: the order may spend the full
+        // USDC notional and must receive at least min_out stock. That pair is
+        // the worst price the band will accept.
+        if order.side == 0 {
+            let implied_e8 = implied_price_e8(0, order.usd_amount, min_out, stock_decimals)?;
+            require!(in_band(0, implied_e8, nyse_e8, band_bps), MarkFillError::OutsideBand);
+        }
 
         let usdc_before = ctx.accounts.vault_usdc.amount;
         let stock_before = ctx.accounts.vault_stock.amount;
@@ -137,6 +138,7 @@ pub mod markfill_vault {
 
         let bump = [ctx.accounts.vault.bump];
         let owner = ctx.accounts.vault.owner;
+        let vault_key = ctx.accounts.vault.key();
         let seeds: &[&[u8]] = &[VAULT_SEED, owner.as_ref(), &bump];
 
         let infos: Vec<AccountInfo> = ctx.remaining_accounts.iter().map(|a| a.clone()).collect();
@@ -144,17 +146,20 @@ pub mod markfill_vault {
             .remaining_accounts
             .iter()
             .map(|a| {
+                // The vault PDA is not an outer signer (the keeper is). Jupiter
+                // still requires it to sign; invoke_signed attaches that signature.
+                let signer = a.is_signer || *a.key == vault_key;
                 if a.is_writable {
-                    AccountMeta::new(*a.key, a.is_signer)
+                    AccountMeta::new(*a.key, signer)
                 } else {
-                    AccountMeta::new_readonly(*a.key, a.is_signer)
+                    AccountMeta::new_readonly(*a.key, signer)
                 }
             })
             .collect();
 
         invoke_signed(
             &Instruction {
-                program_id: jupiter_id(),
+                program_id: JUPITER_V6,
                 accounts: metas,
                 data: jupiter_data,
             },
@@ -174,6 +179,8 @@ pub mod markfill_vault {
                 ctx.accounts.vault_usdc.amount <= usdc_before,
                 MarkFillError::BadFillBalance
             );
+            let spent = usdc_before.saturating_sub(ctx.accounts.vault_usdc.amount);
+            require!(spent <= fill_usd, MarkFillError::OverspendCap);
         } else {
             require!(
                 ctx.accounts.vault_usdc.amount >= usdc_before.saturating_add(min_out),
@@ -183,6 +190,14 @@ pub mod markfill_vault {
                 ctx.accounts.vault_stock.amount <= stock_before,
                 MarkFillError::BadFillBalance
             );
+            let sold = stock_before.saturating_sub(ctx.accounts.vault_stock.amount);
+            let received = ctx.accounts.vault_usdc.amount.saturating_sub(usdc_before);
+            // Sell price needs the share debit. usd_amount on the order is a
+            // USDC notional, not a share count, so it cannot be the denominator.
+            let implied_e8 = implied_price_e8(1, sold, received, stock_decimals)?;
+            require!(in_band(1, implied_e8, nyse_e8, band_bps), MarkFillError::OutsideBand);
+            let max_sold = max_sell_native(fill_usd, nyse_e8, band_bps, stock_decimals)?;
+            require!(sold <= max_sold, MarkFillError::OverspendCap);
         }
 
         let order = &mut ctx.accounts.order;
@@ -242,31 +257,100 @@ fn pyth_e8(price_update: &Account<PriceUpdateV2>, feed_id: &[u8; 32], clock: &Cl
     Ok(e8 as u64)
 }
 
-/// Buy: USDC in / stock out. Sell: stock in / USDC out. Result in 1e8 USD per whole token.
+/// USD per whole token, scaled by 1e8 (10_000_000_000 = $100).
+///
+/// side 0 (buy). Checked before the swap, using the worst case the order allows:
+///   usd_amount — USDC atoms the order may spend. 1_000_000 = $1 (6 decimals).
+///   min_out    — minimum stock atoms the swap must deliver. 10^stock_decimals = 1 token.
+///   usd    = usd_amount / 1e6
+///   tokens = min_out / 10^d
+///   price  = usd / tokens = usd_amount * 10^d / (min_out * 1e6)
+///   e8     = price * 1e8 = usd_amount * 10^d * 100 / min_out
+///
+/// side 1 (sell). Checked after the swap. The order's usd_amount field is a USDC
+/// notional, not a share count, so it is NOT what is passed here. The caller passes
+/// the stock atoms actually debited in the usd_amount parameter, and the USDC atoms
+/// actually credited in min_out:
+///   usd_amount — stock atoms sold. 10^stock_decimals = 1 token.
+///   min_out    — USDC atoms received. 1_000_000 = $1 (6 decimals).
+///   usd    = min_out / 1e6
+///   tokens = usd_amount / 10^d
+///   price  = usd / tokens = min_out * 10^d / (usd_amount * 1e6)
+///   e8     = price * 1e8 = min_out * 10^d * 100 / usd_amount
+///
+/// Worked examples (integer division, no remainder in these cases):
+///
+/// 1. Buy, 8 decimals (AAPLx). Pay $100, receive 1 token.
+///    usd_amount = 100_000_000, min_out = 100_000_000, d = 8
+///    e8 = 100_000_000 * 10^8 * 100 / 100_000_000 = 10_000_000_000 = $100.
+///
+/// 2. Buy, 6 decimals. Pay $250, receive 1 token.
+///    usd_amount = 250_000_000, min_out = 1_000_000, d = 6
+///    e8 = 250_000_000 * 10^6 * 100 / 1_000_000 = 25_000_000_000 = $250.
+///
+/// 3. Sell, 8 decimals. Sell 0.5 token, receive $50.
+///    usd_amount (stock atoms) = 50_000_000, min_out (USDC) = 50_000_000, d = 8
+///    e8 = 50_000_000 * 10^8 * 100 / 50_000_000 = 10_000_000_000 = $100.
+///
+/// 4. Sell, 6 decimals. Sell 2 tokens, receive $500.
+///    usd_amount (stock atoms) = 2_000_000, min_out (USDC) = 500_000_000, d = 6
+///    e8 = 500_000_000 * 10^6 * 100 / 2_000_000 = 25_000_000_000 = $250.
 fn implied_price_e8(side: u8, usd_amount: u64, min_out: u64, stock_decimals: u8) -> Result<u64> {
-    require!(min_out > 0, MarkFillError::OutsideBand);
+    require!(min_out > 0 && usd_amount > 0, MarkFillError::OutsideBand);
+    require!(stock_decimals <= 18, MarkFillError::OutsideBand);
+    let scale = 10u128.pow(stock_decimals as u32);
     if side == 0 {
-        // usd_amount is 6 dp, min_out is stock native
-        // price = usd / tokens = usd_amount * 10^(stock_decimals-6) / min_out, then * 1e8 / 10^stock_decimals
-        // = usd_amount * 1e8 / min_out / 10^(stock_decimals-6) wait:
-        // tokens = min_out / 10^d
-        // usd = usd_amount / 1e6
-        // price = usd/tokens = usd_amount * 10^d / (min_out * 1e6)
-        // e8 = price * 1e8 = usd_amount * 10^d * 1e2 / min_out
         let num = (usd_amount as u128)
-            .checked_mul(10u128.pow(stock_decimals as u32))
+            .checked_mul(scale)
             .ok_or(MarkFillError::OutsideBand)?
             .checked_mul(100)
             .ok_or(MarkFillError::OutsideBand)?;
-        Ok((num / min_out as u128) as u64)
+        u64::try_from(num / min_out as u128).map_err(|_| error!(MarkFillError::OutsideBand))
     } else {
-        // min_out is USDC received (6 dp), usd_amount is notional; use min_out as proceeds
-        // tokens sold unknown here — keeper must pass min_out as USDC out; stock spent checked post-CPI
-        // implied = usdc_out / tokens_in approximated as min_out (6dp) vs order.usd_amount notional
-        let num = (min_out as u128).checked_mul(100).ok_or(MarkFillError::OutsideBand)?;
-        // treat usd_amount as 6dp notional of stock value at NYSE; implied proceeds per $1e6 notional
-        Ok((num.checked_mul(1_000_000).ok_or(MarkFillError::OutsideBand)? / usd_amount as u128) as u64)
+        let num = (min_out as u128)
+            .checked_mul(scale)
+            .ok_or(MarkFillError::OutsideBand)?
+            .checked_mul(100)
+            .ok_or(MarkFillError::OutsideBand)?;
+        u64::try_from(num / usd_amount as u128).map_err(|_| error!(MarkFillError::OutsideBand))
     }
+}
+
+/// Most stock atoms a sell may debit.
+///
+/// order usd_amount is USDC notional (6 decimals), not a share count. The band's
+/// floor price is the cheapest fill still allowed, so it implies the most shares:
+///   floor_e8   = nyse_e8 * (10_000 - band_bps) / 10_000
+///   max_whole  = (usd_amount / 1e6) / (floor_e8 / 1e8) = usd_amount * 100 / floor_e8
+///   max_native = ceil(max_whole * 10^decimals)
+///              = ceil(usd_amount * 100 * 10^decimals / floor_e8)
+///
+/// A band of 10_000 wipes the floor out to zero. There is no finite share bound
+/// then, and this returns OverspendCap instead of pretending there is one.
+///
+/// Example: sell $100 notional, NYSE $100 (e8 = 10_000_000_000), 8 decimals, 50 bps.
+///   floor = 9_950_000_000 ($99.50)
+///   max   = ceil(100_000_000 * 100 * 10^8 / 9_950_000_000) = 100_502_513 atoms
+///         = 1.00502513 tokens = $100 / $99.50.
+fn max_sell_native(usd_amount: u64, nyse_e8: u64, band_bps: u16, stock_decimals: u8) -> Result<u64> {
+    require!(band_bps < 10_000, MarkFillError::OverspendCap);
+    require!(usd_amount > 0 && nyse_e8 > 0, MarkFillError::OverspendCap);
+    require!(stock_decimals <= 18, MarkFillError::OverspendCap);
+    let floor = (nyse_e8 as u128)
+        .checked_mul(10_000u128 - band_bps as u128)
+        .ok_or(MarkFillError::OverspendCap)?
+        / 10_000;
+    require!(floor > 0, MarkFillError::OverspendCap);
+    let num = (usd_amount as u128)
+        .checked_mul(100)
+        .ok_or(MarkFillError::OverspendCap)?
+        .checked_mul(10u128.pow(stock_decimals as u32))
+        .ok_or(MarkFillError::OverspendCap)?;
+    let max = num
+        .checked_add(floor - 1)
+        .ok_or(MarkFillError::OverspendCap)?
+        / floor;
+    u64::try_from(max).map_err(|_| error!(MarkFillError::OverspendCap))
 }
 
 fn in_band(side: u8, implied_e8: u64, nyse_e8: u64, band_bps: u16) -> bool {
@@ -276,6 +360,9 @@ fn in_band(side: u8, implied_e8: u64, nyse_e8: u64, band_bps: u16) -> bool {
     if side == 0 {
         // buy: implied <= nyse * (1 + band/10000)
         implied * 10_000 <= nyse * (10_000 + band)
+    } else if band >= 10_000 {
+        // No positive floor price, so a sell cannot be inside the band.
+        false
     } else {
         implied * 10_000 >= nyse * (10_000 - band)
     }
@@ -306,6 +393,7 @@ pub struct Deposit<'info> {
         constraint = vault.owner == user.key() @ MarkFillError::BadOwner
     )]
     pub vault: Account<'info, Vault>,
+    #[account(constraint = usdc_mint.key() == USDC_MINT @ MarkFillError::BadSwapAccounts)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
     #[account(mut, token::mint = usdc_mint, token::authority = user)]
     pub user_usdc: InterfaceAccount<'info, TokenAccount>,
@@ -332,6 +420,7 @@ pub struct PlaceOrder<'info> {
     )]
     pub vault: Account<'info, Vault>,
     pub stock_mint: InterfaceAccount<'info, Mint>,
+    #[account(constraint = usdc_mint.key() == USDC_MINT @ MarkFillError::BadSwapAccounts)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
     #[account(
         associated_token::mint = usdc_mint,
@@ -388,7 +477,9 @@ pub struct ExecuteFill<'info> {
         bump = order.bump
     )]
     pub order: Account<'info, Order>,
+    #[account(constraint = usdc_mint.key() == USDC_MINT @ MarkFillError::BadSwapAccounts)]
     pub usdc_mint: InterfaceAccount<'info, Mint>,
+    #[account(constraint = stock_mint.key() == order.stock_mint @ MarkFillError::BadSwapAccounts)]
     pub stock_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
@@ -405,7 +496,8 @@ pub struct ExecuteFill<'info> {
     )]
     pub vault_stock: InterfaceAccount<'info, TokenAccount>,
     pub pyth_price: Account<'info, PriceUpdateV2>,
-    /// CHECK: must equal JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4
+    /// CHECK: account constraint pins this to state::JUPITER_V6.
+    #[account(constraint = jupiter_program.key() == JUPITER_V6 @ MarkFillError::BadJupiter)]
     pub jupiter_program: UncheckedAccount<'info>,
     pub token_program: Interface<'info, TokenInterface>,
 }
@@ -435,4 +527,81 @@ pub struct Withdraw<'info> {
     )]
     pub owner_ata: InterfaceAccount<'info, TokenAccount>,
     pub token_program: Interface<'info, TokenInterface>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn price(side: u8, usd_amount: u64, min_out: u64, decimals: u8) -> u64 {
+        implied_price_e8(side, usd_amount, min_out, decimals).unwrap()
+    }
+
+    #[test]
+    fn buy_eight_decimals_is_one_hundred_dollars() {
+        // Example 1. $100 USDC for 1 AAPLx token (8 decimals).
+        assert_eq!(price(0, 100_000_000, 100_000_000, 8), 10_000_000_000);
+    }
+
+    #[test]
+    fn buy_six_decimals_is_two_hundred_fifty_dollars() {
+        // Example 2. $250 USDC for 1 token (6 decimals).
+        assert_eq!(price(0, 250_000_000, 1_000_000, 6), 25_000_000_000);
+    }
+
+    #[test]
+    fn sell_half_token_eight_decimals_is_one_hundred_dollars() {
+        // Example 3. 0.5 token sold, $50 received.
+        assert_eq!(price(1, 50_000_000, 50_000_000, 8), 10_000_000_000);
+    }
+
+    #[test]
+    fn sell_two_tokens_six_decimals_is_two_hundred_fifty_dollars() {
+        // Example 4. 2 tokens sold, $500 received.
+        assert_eq!(price(1, 2_000_000, 500_000_000, 6), 25_000_000_000);
+    }
+
+    #[test]
+    fn sell_cap_matches_floor_notional() {
+        // $100 notional, NYSE $100, 8 decimals, 50 bps → 100_502_513 atoms.
+        let max = max_sell_native(100_000_000, 10_000_000_000, 50, 8).unwrap();
+        assert_eq!(max, 100_502_513);
+        assert!(100_000_000u64 <= max);
+        // 10 whole tokens is far past the order.
+        assert!(10 * 100_000_000 > max);
+    }
+
+    #[test]
+    fn sell_cap_six_decimals() {
+        // $500 notional, NYSE $250, 6 decimals, 100 bps → 2_020_203 atoms.
+        let max = max_sell_native(500_000_000, 25_000_000_000, 100, 6).unwrap();
+        assert_eq!(max, 2_020_203);
+    }
+
+    #[test]
+    fn full_band_has_no_share_bound() {
+        assert!(max_sell_native(100_000_000, 10_000_000_000, 10_000, 8).is_err());
+    }
+
+    #[test]
+    fn buy_spend_over_notional_fails_the_cap() {
+        let usdc_before = 1_000_000_000u64;
+        let usdc_after = 100_000_000u64;
+        let authorized = 250_000_000u64;
+        let spent = usdc_before.saturating_sub(usdc_after);
+        assert!(spent > authorized);
+        let honest = usdc_before.saturating_sub(usdc_before - authorized);
+        assert!(honest <= authorized);
+    }
+
+    #[test]
+    fn band_edges() {
+        let nyse = 10_000_000_000u64;
+        assert!(in_band(0, nyse, nyse, 50));
+        assert!(in_band(0, 10_040_000_000, nyse, 50));
+        assert!(!in_band(0, 10_100_000_000, nyse, 50));
+        assert!(in_band(1, nyse, nyse, 50));
+        assert!(!in_band(1, 9_900_000_000, nyse, 50));
+        assert!(!in_band(1, nyse, nyse, 10_000));
+    }
 }

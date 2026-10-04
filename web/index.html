@@ -553,7 +553,7 @@ $("arm").onclick = async () => {
       }
       const message = "MarkFill arm " + pubkey + " ts=" + Date.now();
       const signature = await signMessage(session, message);
-      await api("/api/desk/arm", {
+      const r = await api("/api/desk/arm", {
         method: "POST",
         body: {
           owner: pubkey,
@@ -565,6 +565,15 @@ $("arm").onclick = async () => {
           signature,
         },
       });
+      if (r && r.needsUserSignature && r.transaction) {
+        const { Transaction } = await import("https://esm.sh/@solana/web3.js@1.98.4");
+        const raw = Uint8Array.from(atob(r.transaction), (c) => c.charCodeAt(0));
+        const hash = await signAndSend(session, Transaction.from(raw));
+        armed = true;
+        $("armnote").textContent = "Order is on your vault. The keeper fills it when this name is cheap or fair.";
+        log("armed on vault " + hash);
+        return;
+      }
       armed = true;
       $("armnote").textContent = "MarkFill will buy from your deposited USDC when this name is cheap or fair. No extra wallet popup.";
       log("armed on desk wallet");

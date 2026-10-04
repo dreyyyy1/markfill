@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import {
+  Connection,
   PublicKey,
   SystemProgram,
   TransactionInstruction,
   Transaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
@@ -25,6 +27,62 @@ const ORDER_SEED = Buffer.from("order");
 
 function disc(name: string) {
   return createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
+}
+
+function accountDisc(name: string) {
+  return createHash("sha256").update(`account:${name}`).digest().subarray(0, 8);
+}
+
+/** Order::SIZE in state.rs. filled is the byte at offset 163. */
+const ORDER_SIZE = 165;
+const FILLED_OFFSET = 163;
+
+export interface OpenOrder {
+  pubkey: PublicKey;
+  owner: PublicKey;
+  vault: PublicKey;
+  orderId: bigint;
+  stockMint: PublicKey;
+  pythFeedId: Buffer;
+  usdAmount: bigint;
+  bandBps: number;
+  side: number;
+  expiryTs: bigint;
+  filled: boolean;
+}
+
+export function decodeOrder(pubkey: PublicKey, data: Buffer): OpenOrder {
+  let o = 8;
+  const owner = new PublicKey(data.subarray(o, (o += 32)));
+  const vault = new PublicKey(data.subarray(o, (o += 32)));
+  const orderId = data.readBigUInt64LE(o);
+  o += 8;
+  const stockMint = new PublicKey(data.subarray(o, (o += 32)));
+  const pythFeedId = Buffer.from(data.subarray(o, (o += 32)));
+  const usdAmount = data.readBigUInt64LE(o);
+  o += 8;
+  const bandBps = data.readUInt16LE(o);
+  o += 2;
+  const side = data[o];
+  o += 1;
+  const expiryTs = data.readBigInt64LE(o);
+  o += 8;
+  const filled = data[o] !== 0;
+  return { pubkey, owner, vault, orderId, stockMint, pythFeedId, usdAmount, bandBps, side, expiryTs, filled };
+}
+
+export async function listOpenOrders(conn: Connection): Promise<OpenOrder[]> {
+  const discBytes = accountDisc("Order");
+  const rows = await conn.getProgramAccounts(VAULT_PROGRAM, {
+    filters: [
+      { dataSize: ORDER_SIZE },
+      { memcmp: { offset: 0, bytes: bs58.encode(discBytes) } },
+      { memcmp: { offset: FILLED_OFFSET, bytes: bs58.encode(Buffer.from([0])) } },
+    ],
+  });
+  return rows
+    .map((row) => decodeOrder(row.pubkey, Buffer.from(row.account.data)))
+    .filter((o) => !o.filled);
 }
 
 function u64le(n: number | bigint) {
@@ -168,4 +226,53 @@ export async function withdrawIx(user: PublicKey, mint: PublicKey, ownerAta: Pub
 
 export function txToB64(tx: Transaction) {
   return Buffer.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false })).toString("base64");
+}
+
+export interface JupiterAccountMeta {
+  pubkey: PublicKey;
+  isSigner: boolean;
+  isWritable: boolean;
+}
+
+/** execute_fill. Jupiter accounts are remaining accounts. The vault PDA is not an outer signer. */
+export function executeFillIx(opts: {
+  keeper: PublicKey;
+  owner: PublicKey;
+  orderId: bigint;
+  stockMint: PublicKey;
+  vaultUsdc: PublicKey;
+  vaultStock: PublicKey;
+  pythPrice: PublicKey;
+  jupiterData: Buffer;
+  jupiterAccounts: JupiterAccountMeta[];
+  minOut: bigint;
+}) {
+  const [vault] = vaultPda(opts.owner);
+  const [order] = orderPda(opts.owner, opts.orderId);
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(opts.jupiterData.length);
+  const data = Buffer.concat([Buffer.from(disc("execute_fill")), len, opts.jupiterData, u64le(opts.minOut)]);
+  return new TransactionInstruction({
+    programId: VAULT_PROGRAM,
+    keys: [
+      { pubkey: opts.keeper, isSigner: true, isWritable: true },
+      { pubkey: vault, isSigner: false, isWritable: false },
+      { pubkey: order, isSigner: false, isWritable: true },
+      { pubkey: new PublicKey(USDC), isSigner: false, isWritable: false },
+      { pubkey: opts.stockMint, isSigner: false, isWritable: false },
+      { pubkey: opts.vaultUsdc, isSigner: false, isWritable: true },
+      { pubkey: opts.vaultStock, isSigner: false, isWritable: true },
+      { pubkey: opts.pythPrice, isSigner: false, isWritable: false },
+      { pubkey: JUPITER_V6, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      ...opts.jupiterAccounts.map((a) => ({
+        pubkey: a.pubkey,
+        // Only the keeper can be an outer signer. The program marks the vault
+        // PDA as the Jupiter signer inside the CPI.
+        isSigner: a.pubkey.equals(opts.keeper),
+        isWritable: a.isWritable,
+      })),
+    ],
+    data,
+  });
 }

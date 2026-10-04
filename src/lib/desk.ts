@@ -1,4 +1,4 @@
-import { VersionedTransaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { buildTape } from "./tape.js";
 import { quoteTrade } from "./jupiter.js";
 import { receiptFromTape } from "./receipts.js";
@@ -21,15 +21,32 @@ import {
   deskKeypair,
   exportDeskSecret,
   isLive,
+  keeperKeypair,
   onchainBalances,
   scanUsdcDeposits,
   sendTokens,
 } from "./custody.js";
-import { USDC, stockByTicker } from "./stocks.js";
+import { STOCKS, USDC, stockByTicker } from "./stocks.js";
 import { oid, vaultMode } from "./auth.js";
-import { txToB64, vaultUsdcAta, withdrawIx } from "./vault.js";
-import { PublicKey, Transaction } from "@solana/web3.js";
-import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  JUPITER_V6,
+  executeFillIx,
+  initializeVaultIx,
+  listOpenOrders,
+  placeOrderIx,
+  txToB64,
+  vaultPda,
+  vaultStockAta,
+  vaultUsdcAta,
+  withdrawIx,
+  type OpenOrder,
+} from "./vault.js";
+import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddress,
+} from "@solana/spl-token";
 
 const JUP = "https://lite-api.jup.ag/swap/v1";
 
@@ -120,11 +137,16 @@ export async function arm(order: Omit<ArmOrder, "createdAt" | "armed"> & { armed
   if (!stock) throw new Error("unknown ticker");
   const usd = Number(order.usd);
   if (!(usd > 0)) throw new Error("size must be greater than 0");
+  const bandBps = Number(order.bandBps || 50);
+  const side = order.side === "sell" ? "sell" : "buy";
+  if (vaultMode()) {
+    return armVault({ owner, stock, usd, bandBps, side });
+  }
   const u = getUser(owner);
-  if (order.side === "buy" && u.usdc + 1e-9 < usd) {
+  if (side === "buy" && u.usdc + 1e-9 < usd) {
     throw new Error(`desk balance is $${u.usdc.toFixed(2)} USDC — deposit first`);
   }
-  if (order.side === "sell") {
+  if (side === "sell") {
     const h = u.holdings[stock.ticker];
     if (!h || h.shares <= 0) throw new Error("no shares of this name on the desk to sell");
   }
@@ -132,17 +154,255 @@ export async function arm(order: Omit<ArmOrder, "createdAt" | "armed"> & { armed
     owner,
     ticker: stock.ticker,
     usd,
-    bandBps: Number(order.bandBps || 50),
-    side: order.side,
+    bandBps,
+    side,
     armed: order.armed !== false,
     createdAt: Date.now(),
   });
 }
 
-export async function processArms() {
-  if (vaultMode()) {
-    return [];
+const ARM_TTL_SEC = 7 * 24 * 60 * 60;
+
+async function tokenUi(ata: PublicKey) {
+  try {
+    const acc = await connection().getTokenAccountBalance(ata);
+    return Number(acc.value.uiAmount || 0);
+  } catch {
+    return 0;
   }
+}
+
+/** User-signed place_order. Does not write the legacy arm ledger. */
+async function armVault(opts: {
+  owner: string;
+  stock: NonNullable<ReturnType<typeof stockByTicker>>;
+  usd: number;
+  bandBps: number;
+  side: "buy" | "sell";
+}) {
+  if (!opts.stock.pythEquity) throw new Error("no pyth equity feed for this ticker");
+  const feed = Buffer.from(opts.stock.pythEquity.replace(/^0x/, ""), "hex");
+  if (feed.length !== 32) throw new Error("bad pyth feed id");
+  const user = new PublicKey(oid(opts.owner));
+  const conn = connection();
+  const [vault] = vaultPda(user);
+  const info = await conn.getAccountInfo(vault);
+  const ixs = [];
+  let orderId = 0n;
+  if (!info) {
+    ixs.push(initializeVaultIx(user));
+  } else {
+    if (info.data.length < 49) throw new Error("vault account is the wrong size");
+    orderId = info.data.readBigUInt64LE(8 + 32 + 1);
+  }
+  const mint = new PublicKey(opts.stock.mint);
+  const { ata: usdcAta } = await vaultUsdcAta(user);
+  const { ata: stockAta } = await vaultStockAta(user, mint);
+  if (opts.side === "buy") {
+    const usdc = await tokenUi(usdcAta);
+    if (usdc + 1e-9 < opts.usd) throw new Error(`vault balance is $${usdc.toFixed(2)} USDC — deposit first`);
+  } else {
+    const shares = await tokenUi(stockAta);
+    if (shares <= 0) throw new Error("no shares of this name in the vault to sell");
+  }
+  ixs.push(
+    createAssociatedTokenAccountIdempotentInstruction(user, usdcAta, vault, new PublicKey(USDC), TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
+    createAssociatedTokenAccountIdempotentInstruction(user, stockAta, vault, mint, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID),
+    await placeOrderIx({
+      user,
+      stockMint: mint,
+      usdAmount: BigInt(Math.round(opts.usd * 1_000_000)),
+      bandBps: opts.bandBps,
+      side: opts.side === "sell" ? 1 : 0,
+      expiryTs: Math.floor(Date.now() / 1000) + ARM_TTL_SEC,
+      pythFeedId: feed,
+      orderId,
+    }),
+  );
+  const tx = new Transaction().add(...ixs);
+  tx.feePayer = user;
+  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+  return {
+    needsUserSignature: true,
+    transaction: txToB64(tx),
+    orderId: orderId.toString(),
+    vault: vault.toBase58(),
+  };
+}
+
+async function jupiterRoute(quote: any, user: PublicKey, destination: PublicKey) {
+  const res = await fetch(`${JUP}/swap-instructions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: user.toBase58(),
+      destinationTokenAccount: destination.toBase58(),
+      wrapAndUnwrapSol: false,
+      dynamicComputeUnitLimit: true,
+    }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) throw new Error(`jupiter swap-instructions ${res.status}: ${await res.text()}`);
+  const body: any = await res.json();
+  const swap = body.swapInstruction;
+  if (!swap?.data || swap.programId !== JUPITER_V6.toBase58()) {
+    throw new Error("jupiter route is not the v6 aggregator");
+  }
+  return {
+    data: Buffer.from(swap.data, "base64"),
+    accounts: (swap.accounts || []).map((a: any) => ({
+      pubkey: new PublicKey(a.pubkey),
+      isSigner: Boolean(a.isSigner),
+      isWritable: Boolean(a.isWritable),
+    })),
+    luts: (body.addressLookupTableAddresses || []) as string[],
+  };
+}
+
+function pythAccount(map: Record<string, PublicKey>, feedHex: string) {
+  const want = feedHex.replace(/^0x/, "").toLowerCase();
+  for (const [key, value] of Object.entries(map)) {
+    if (key.replace(/^0x/, "").toLowerCase() === want) return value;
+  }
+  throw new Error("pyth update missing for " + want);
+}
+
+async function submitVaultFill(opts: {
+  order: OpenOrder;
+  vaultUsdc: PublicKey;
+  vaultStock: PublicKey;
+  route: Awaited<ReturnType<typeof jupiterRoute>>;
+  minOut: bigint;
+}) {
+  const keeper = keeperKeypair();
+  const conn = connection();
+  const feedHex = opts.order.pythFeedId.toString("hex");
+  const headers: Record<string, string> = {};
+  const pythKey = process.env.PYTH_API_KEY?.trim();
+  if (pythKey) headers.Authorization = `Bearer ${pythKey}`;
+  const hermes = await fetch(
+    `https://hermes.pyth.network/v2/updates/price/latest?ids[]=${feedHex}&encoding=base64`,
+    { headers, signal: AbortSignal.timeout(12_000) },
+  );
+  if (!hermes.ok) throw new Error(`hermes ${hermes.status}`);
+  const update: any = await hermes.json();
+  const vaas: string[] = update?.binary?.data || [];
+  if (!vaas.length) throw new Error("hermes returned no price update");
+
+  const { PythSolanaReceiver } = await import("@pythnetwork/pyth-solana-receiver");
+  const { Wallet } = await import("@coral-xyz/anchor");
+  const receiver = new PythSolanaReceiver({ connection: conn, wallet: new Wallet(keeper) });
+  // Partial guardian verification. A fully verified VAA plus the Jupiter route
+  // does not fit in one transaction. The receiver still writes PriceUpdateV2.
+  const posted = await receiver.buildPostPriceUpdateAtomicInstructions(vaas);
+  const pythPrice = pythAccount(posted.priceFeedIdToPriceUpdateAccount, feedHex);
+  const fillIx = executeFillIx({
+    keeper: keeper.publicKey,
+    owner: opts.order.owner,
+    orderId: opts.order.orderId,
+    stockMint: opts.order.stockMint,
+    vaultUsdc: opts.vaultUsdc,
+    vaultStock: opts.vaultStock,
+    pythPrice,
+    jupiterData: opts.route.data,
+    jupiterAccounts: opts.route.accounts,
+    minOut: opts.minOut,
+  });
+  const post = posted.postInstructions || [];
+  const close = posted.closeInstructions || [];
+  const ixs = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+    ...post.map((row: { instruction: any }) => row.instruction),
+    fillIx,
+    ...close.map((row: { instruction: any }) => row.instruction),
+  ];
+  const signers = [...post, ...close].flatMap((row: { signers?: any[] }) => row.signers || []);
+  const luts = [];
+  for (const addr of opts.route.luts) {
+    const table = await conn.getAddressLookupTable(new PublicKey(addr));
+    if (table.value) luts.push(table.value);
+  }
+  const { blockhash } = await conn.getLatestBlockhash();
+  const message = new TransactionMessage({
+    payerKey: keeper.publicKey,
+    recentBlockhash: blockhash,
+    instructions: ixs,
+  }).compileToV0Message(luts);
+  const tx = new VersionedTransaction(message);
+  tx.sign([keeper, ...signers]);
+  return conn.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+}
+
+async function fillVaultOrder(order: OpenOrder) {
+  const stock = STOCKS.find((s) => s.mint === order.stockMint.toBase58());
+  if (!stock) throw new Error("no stock for mint " + order.stockMint.toBase58());
+  const side = order.side === 0 ? "buy" : "sell";
+  const tape = await buildTape(stock.ticker, order.bandBps);
+  const ready = side === "buy" ? tape.actions.buyFair || tape.actions.buyCheap : tape.actions.sellRich;
+  if (!ready) return null;
+  let usd = Number(order.usdAmount) / 1e6;
+  const { ata: vaultUsdc } = await vaultUsdcAta(order.owner);
+  const { ata: vaultStock } = await vaultStockAta(order.owner, order.stockMint);
+  if (side === "sell") {
+    if (!tape.onchain?.price) throw new Error("no on-chain print to size a sell");
+    const shares = await tokenUi(vaultStock);
+    usd = Math.min(usd, shares * tape.onchain.price);
+    if (usd < 1) throw new Error("sell size too small");
+  }
+  const priced = await quoteTrade({
+    ticker: stock.ticker,
+    usd,
+    bandBps: order.bandBps,
+    side,
+    slippageBps: Math.max(1, order.bandBps),
+  });
+  if (!priced.allowed) throw new Error(priced.reason);
+  const minRaw = priced.quote.otherAmountThreshold ?? priced.quote.outAmount;
+  if (minRaw == null || BigInt(minRaw) <= 0n) throw new Error("jupiter quote has no min out");
+  const [vault] = vaultPda(order.owner);
+  const route = await jupiterRoute(priced.quote, vault, side === "buy" ? vaultStock : vaultUsdc);
+  const signature = await submitVaultFill({
+    order,
+    vaultUsdc,
+    vaultStock,
+    route,
+    minOut: BigInt(minRaw),
+  });
+  return { owner: order.owner.toBase58(), ticker: stock.ticker, signature, live: true as const };
+}
+
+async function processVaultArms() {
+  const out = [];
+  let orders: OpenOrder[];
+  try {
+    orders = await listOpenOrders(connection());
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.warn("vault arms", message);
+    return [{ owner: "", ticker: "", error: message }];
+  }
+  const now = BigInt(Math.floor(Date.now() / 1000));
+  for (const order of orders) {
+    if (order.expiryTs <= now) continue;
+    try {
+      const filled = await fillVaultOrder(order);
+      if (filled) out.push(filled);
+    } catch (e) {
+      const stock = STOCKS.find((s) => s.mint === order.stockMint.toBase58());
+      out.push({
+        owner: order.owner.toBase58(),
+        ticker: stock?.ticker || order.stockMint.toBase58(),
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+  return out;
+}
+
+export async function processArms() {
+  if (vaultMode()) return processVaultArms();
   const out = [];
   for (const a of listArms()) {
     try {

@@ -82,7 +82,13 @@ export function ensureUser(owner: string): UserAccount {
   return l.users[id];
 }
 
-/** Pin the desk wallet once. Later calls do not rotate the address or key. */
+/**
+ * LEGACY — REMOVE AFTER SWEEP.
+ * Writes the raw desk secret in plaintext to data/ledger.json.
+ * Slated for deletion once scripts/sweep-custodial.ts --live has been
+ * confirmed against the live Render desks.
+ * Do not add new callers. Do not delete this until that --live sweep is confirmed.
+ */
 export function pinDeskWallet(owner: string, address: string, secret: string) {
   const id = oid(owner);
   const l = load();

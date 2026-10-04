@@ -82,6 +82,9 @@ function persistMaster(raw: string) {
   }
 }
 
+// LEGACY CUSTODIAL PATH — tracked by scripts/check-no-secrets.mjs (warns, does not fail).
+// Loads or creates MARKFILL_SECRET. Slated for removal with deskKeypair once
+// scripts/sweep-custodial.ts has been confirmed against production.
 export function ensureMasterSecret(): string {
   const existing = readEnvSecret();
   if (existing) {
@@ -106,7 +109,12 @@ function saveDesks(map: Record<string, { address: string; secret: string }>) {
   fs.writeFileSync(DESKS_FILE, JSON.stringify(map, null, 2));
 }
 
-/** One desk wallet per connected wallet. Created once, never rotated. */
+/**
+ * LEGACY CUSTODIAL PATH — tracked by scripts/check-no-secrets.mjs (warns, does not fail).
+ * Derives a desk key from MARKFILL_SECRET and stores it in plaintext.
+ * Slated for removal once scripts/sweep-custodial.ts has been confirmed against
+ * production. Do not add new callers. Vault fills use keeperKeypair(), not this.
+ */
 export function deskKeypair(owner: string): Keypair {
   if (!owner) throw new Error("owner required");
   const id = oid(owner);
@@ -133,6 +141,13 @@ export function deskKeypair(owner: string): Keypair {
 
 export function deskAddress(owner: string) {
   return deskKeypair(owner).publicKey.toBase58();
+}
+
+/** Fee payer for permissionless vault fills. Pays Solana fees only. Not a desk wallet. */
+export function keeperKeypair(): Keypair {
+  const raw = process.env.MARKFILL_KEEPER?.trim();
+  if (!raw) throw new Error("MARKFILL_KEEPER is not set — vault fills need a fee-payer key");
+  return Keypair.fromSecretKey(bs58.decode(raw));
 }
 
 async function mintProgram(conn: Connection, mint: PublicKey) {
