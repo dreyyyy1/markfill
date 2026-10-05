@@ -68,15 +68,18 @@ CHEAP → FILL
 7. **Session LP** — tight Meteora bins while NYSE is open, wider overnight, none when off-tape
 8. **Receipts** — each fill stores NYSE, on-chain, bps, and session at send time
 9.
-10. MARKFILL RECEIPT
-Asset:             AAPLx
-Side:              BUY
-NYSE reference:    $250.00
-On-chain quote:    $250.62
-Deviation:         +24.8 bps
-Allowed band:      100 bps
-Session:           NYSE CLOSED
-Result:            FILLED
+### MarkFill Receipt
+
+| Field | Value |
+|---|---|
+| **Asset** | AAPLx |
+| **Side** | BUY |
+| **NYSE reference** | $250.00 |
+| **On-chain quote** | $250.62 |
+| **Deviation** | +24.8 bps |
+| **Allowed band** | 100 bps |
+| **Session** | NYSE CLOSED |
+| **Result** | ✅ FILLED |
 
 Prototype execution receipt — Arm → custodial desk wallet → Jupiter
 Solana TX:[ https://solscan.io/tx/5cPtfCXF32tSA9pPLGFcnZFyasbmBz75M6rhhhErHjE2oA2jMcGf6EVGHxkfAWwS3aBNx49JABHjBjQkqPvHZJmG ]
