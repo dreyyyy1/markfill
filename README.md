@@ -75,6 +75,7 @@ Deviation:         +24.8 bps
 Allowed band:      100 bps
 Session:           NYSE CLOSED
 Result:            FILLED
+
 Prototype execution receipt — Arm → custodial desk wallet → Jupiter
 Solana TX:[ https://solscan.io/tx/5cPtfCXF32tSA9pPLGFcnZFyasbmBz75M6rhhhErHjE2oA2jMcGf6EVGHxkfAWwS3aBNx49JABHjBjQkqPvHZJmG ]
 
