@@ -87,7 +87,7 @@ Anchor PDA vault implementation is included in the repository and is the planned
 
 10. **Account** - Once you connect your main wallet, a designated non-custodial wallet is assigned to you as your desk wallet, this is what makes sure you do not have to come and sign any transaction when your order that you arm already wants to fill. Fund the account (usdc and little sol for transanction fee) from your connected wallet , set your amount and stock to buy, and arm. whenever the price is right and fair , it buys automatically for you and you can come back to withdraw back to the connected wallet. Current prototype custody: The live desk currently uses server-derived custodial execution wallets so armed orders can execute without requiring a wallet signature at fill time. The repository also includes the Anchor PDA vault architecture for the planned non-custodial version. The vault becomes the production trust boundary once deployed and migrated. constraint is program fee
     
-12. **Log** - This is what displays the output of all your actions. 
+12. **Fills** - This is what displays the output of all your actions. 
     
 Pyth is the session clock and the equity symbology. If `PYTH_API_KEY` is set, Hermes also prices `Equity.US.*` and `Crypto.*x/USD`. Without a key, NYSE comes from Yahoo and on-chain from Jupiter — the gate still works.
 
