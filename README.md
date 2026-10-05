@@ -66,7 +66,9 @@ CHEAP → FILL
 5. **Arm wait** — Arm your buy position with your size when you can not wait on screen for the price to be right,when the name comes back cheap or fair, the buy sends from your desk wallet on Markfill.
 6. **Overnight snap** — if NYSE is closed and the DEX is cheap, shows $ per $100 if it prints cash at the open
 7. **Session LP** — tight Meteora bins while NYSE is open, wider overnight, none when off-tape
-8. **Receipts** — each fill stores NYSE, on-chain, bps, and session at send time MARKFILL RECEIPT
+8. **Receipts** — each fill stores NYSE, on-chain, bps, and session at send time
+9.
+10. MARKFILL RECEIPT
 Asset:             AAPLx
 Side:              BUY
 NYSE reference:    $250.00
