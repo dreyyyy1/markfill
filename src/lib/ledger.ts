@@ -47,14 +47,31 @@ export interface ArmOrder {
   createdAt: number;
 }
 
+export type ArmStatus = "pending" | "executed" | "failed";
+
+/** Survives a page reload. The live `arms` list is only what the keeper may still fill. */
+export interface ArmRecord {
+  owner: string;
+  ticker: string;
+  usd: number;
+  bandBps: number;
+  side: "buy" | "sell";
+  status: ArmStatus;
+  createdAt: number;
+  updatedAt: number;
+  tx?: string;
+  error?: string;
+}
+
 interface Ledger {
   processed: string[];
   users: Record<string, UserAccount>;
   arms: ArmOrder[];
+  armRecords: ArmRecord[];
 }
 
 function empty(): Ledger {
-  return { processed: [], users: {}, arms: [] };
+  return { processed: [], users: {}, arms: [], armRecords: [] };
 }
 
 function load(): Ledger {
@@ -199,14 +216,71 @@ export function debitWithdraw(owner: string, kind: string, amount: number, ticke
   return u;
 }
 
+function rememberArm(l: Ledger, order: ArmOrder, status: ArmStatus, extra?: { tx?: string; error?: string }) {
+  const owner = oid(order.owner);
+  const now = Date.now();
+  const rows = l.armRecords || [];
+  const open = rows.findIndex(
+    (r) => r.owner === owner && r.ticker === order.ticker && r.side === order.side && r.status !== "executed",
+  );
+  const next: ArmRecord = {
+    owner,
+    ticker: order.ticker,
+    usd: order.usd,
+    bandBps: order.bandBps,
+    side: order.side,
+    status,
+    createdAt: open >= 0 ? rows[open].createdAt : order.createdAt || now,
+    updatedAt: now,
+    tx: extra?.tx,
+    error: status === "failed" ? extra?.error : undefined,
+  };
+  if (open >= 0) rows[open] = next;
+  else rows.push(next);
+  const mine = rows.filter((r) => r.owner === owner).slice(-30);
+  l.armRecords = rows.filter((r) => r.owner !== owner).concat(mine);
+}
+
 export function setArm(order: ArmOrder) {
   const l = load();
   const owner = oid(order.owner);
   const pinned = { ...order, owner };
   l.arms = l.arms.filter((a) => !(a.owner === owner && a.ticker === order.ticker && a.side === order.side));
   if (pinned.armed) l.arms.push(pinned);
+  rememberArm(l, pinned, "pending");
   save(l);
   return pinned;
+}
+
+export function recordArmResult(
+  order: Pick<ArmOrder, "owner" | "ticker" | "side" | "usd" | "bandBps" | "createdAt">,
+  status: "executed" | "failed",
+  extra?: { tx?: string; error?: string },
+) {
+  const l = load();
+  const current = l.arms.find((a) => a.owner === oid(order.owner) && a.ticker === order.ticker && a.side === order.side);
+  rememberArm(
+    l,
+    {
+      owner: order.owner,
+      ticker: order.ticker,
+      usd: current?.usd ?? order.usd,
+      bandBps: current?.bandBps ?? order.bandBps,
+      side: order.side,
+      armed: status !== "executed",
+      createdAt: current?.createdAt ?? order.createdAt,
+    },
+    status,
+    extra,
+  );
+  save(l);
+}
+
+export function userArmRecords(owner: string) {
+  const id = oid(owner);
+  return (load().armRecords || [])
+    .filter((r) => r.owner === id)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export function listArms() {
@@ -222,5 +296,10 @@ export function disarm(owner: string, ticker?: string) {
   const id = oid(owner);
   const l = load();
   l.arms = l.arms.filter((a) => a.owner !== id || (ticker && a.ticker !== ticker));
+  l.armRecords = (l.armRecords || []).filter((r) => {
+    if (r.owner !== id || r.status !== "pending") return true;
+    if (!ticker) return false;
+    return r.ticker !== ticker;
+  });
   save(l);
 }

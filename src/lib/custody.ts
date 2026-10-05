@@ -206,18 +206,79 @@ export async function onchainBalances(owner: string) {
   } catch {
     usdc = 0;
   }
-  const stocks: { ticker: string; xSymbol: string; shares: number }[] = [];
+  const stocks: { ticker: string; xSymbol: string; shares: number; txs: string[] }[] = [];
   for (const s of STOCKS) {
     try {
       const { ata, program } = await ataFor(s.mint, kp.publicKey);
       const acc = await getAccount(conn, ata, "confirmed", program);
       const shares = Number(acc.amount) / 10 ** s.decimals;
-      if (shares > 0) stocks.push({ ticker: s.ticker, xSymbol: s.xSymbol, shares });
+      if (shares > 0) stocks.push({ ticker: s.ticker, xSymbol: s.xSymbol, shares, txs: await buySignatures(conn, ata) });
     } catch {
       /* no account yet */
     }
   }
   return { sol, usdc, stocks };
+}
+
+const buyTxCache = new Map<string, { at: number; txs: string[] }>();
+
+/** Signatures that increased this token account. Those are the buys still sitting in the wallet. */
+async function buySignatures(conn: Connection, ata: PublicKey): Promise<string[]> {
+  const key = ata.toBase58();
+  const hit = buyTxCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.txs;
+  const txs = await loadBuySignatures(conn, ata);
+  buyTxCache.set(key, { at: Date.now(), txs });
+  return txs;
+}
+
+async function loadBuySignatures(conn: Connection, ata: PublicKey): Promise<string[]> {
+  let listed;
+  try {
+    listed = await conn.getSignaturesForAddress(ata, { limit: 8 });
+  } catch {
+    return [];
+  }
+  const incoming: string[] = [];
+  let fallback = "";
+  let parsed = 0;
+  for (const row of listed) {
+    if (row.err) continue;
+    if (!fallback) fallback = row.signature;
+    try {
+      const tx = await conn.getParsedTransaction(row.signature, { maxSupportedTransactionVersion: 0 });
+      if (!tx?.meta) continue;
+      parsed++;
+      const keys = accountKeysOf(tx);
+      const idx = keys.indexOf(ata.toBase58());
+      if (idx < 0) continue;
+      const pre = tokenUiAt(tx.meta.preTokenBalances, idx);
+      const post = tokenUiAt(tx.meta.postTokenBalances, idx);
+      if (post > pre + 1e-12) incoming.push(row.signature);
+    } catch {
+      /* a later row may still parse */
+    }
+    if (incoming.length >= 5) break;
+  }
+  if (incoming.length) return incoming;
+  return parsed ? [] : fallback ? [fallback] : [];
+}
+
+function accountKeysOf(tx: {
+  transaction: { message: { accountKeys: { pubkey: PublicKey }[] } };
+  meta: { loadedAddresses?: { writable: PublicKey[]; readonly: PublicKey[] } } | null;
+}) {
+  const meta = tx.meta;
+  return [
+    ...tx.transaction.message.accountKeys.map((k) => k.pubkey.toBase58()),
+    ...(meta?.loadedAddresses?.writable || []).map((k) => k.toBase58()),
+    ...(meta?.loadedAddresses?.readonly || []).map((k) => k.toBase58()),
+  ];
+}
+
+function tokenUiAt(rows: { accountIndex: number; uiTokenAmount: { uiAmount: number | null } }[] | null | undefined, idx: number) {
+  const hit = rows?.find((b) => b.accountIndex === idx);
+  return Number(hit?.uiTokenAmount.uiAmount || 0);
 }
 
 async function ensureAta(owner: PublicKey, mint: string, payer: Keypair) {
@@ -269,6 +330,37 @@ export async function sendTokens(opts: {
   tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
   const sig = await sendAndConfirmTransaction(conn, tx, [kp]);
   return { paper: false, signature: sig };
+}
+
+/** Sends the entire token balance. The amount is the raw account balance, not a rounded float. */
+export async function sendFullBalance(opts: { owner: string; mint: string; to: string; decimals: number }) {
+  const kp = deskKeypair(opts.owner);
+  const conn = connection();
+  const from = await ataFor(opts.mint, kp.publicKey);
+  let raw: bigint;
+  try {
+    const acc = await getAccount(conn, from.ata, "confirmed", from.program);
+    raw = acc.amount;
+  } catch {
+    return null;
+  }
+  if (raw <= 0n) return null;
+  const dest = await ensureAta(new PublicKey(opts.to), opts.mint, kp);
+  const ix = createTransferCheckedInstruction(
+    from.ata,
+    from.mint,
+    dest.ata,
+    kp.publicKey,
+    raw,
+    opts.decimals,
+    [],
+    from.program,
+  );
+  const tx = new Transaction().add(ix);
+  tx.feePayer = kp.publicKey;
+  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+  const signature = await sendAndConfirmTransaction(conn, tx, [kp]);
+  return { paper: false as const, signature, amount: Number(raw) / 10 ** opts.decimals };
 }
 
 export async function scanUsdcDeposits(owner: string) {

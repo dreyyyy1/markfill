@@ -11,9 +11,12 @@ import {
   listArms,
   listOwners,
   seenSig,
+  recordArmResult,
   setArm,
+  userArmRecords,
   userArms,
   type ArmOrder,
+  type ArmRecord,
 } from "./ledger.js";
 import {
   connection,
@@ -24,6 +27,7 @@ import {
   keeperKeypair,
   onchainBalances,
   scanUsdcDeposits,
+  sendFullBalance,
   sendTokens,
 } from "./custody.js";
 import { STOCKS, USDC, stockByTicker } from "./stocks.js";
@@ -388,13 +392,40 @@ async function processVaultArms() {
     if (order.expiryTs <= now) continue;
     try {
       const filled = await fillVaultOrder(order);
-      if (filled) out.push(filled);
+      if (filled) {
+        recordArmResult(
+          {
+            owner: filled.owner,
+            ticker: filled.ticker,
+            side: order.side === 0 ? "buy" : "sell",
+            usd: Number(order.usdAmount) / 1e6,
+            bandBps: order.bandBps,
+            createdAt: Date.now(),
+          },
+          "executed",
+          { tx: filled.signature },
+        );
+        out.push(filled);
+      }
     } catch (e) {
       const stock = STOCKS.find((s) => s.mint === order.stockMint.toBase58());
+      const error = e instanceof Error ? e.message : String(e);
+      recordArmResult(
+        {
+          owner: order.owner.toBase58(),
+          ticker: stock?.ticker || order.stockMint.toBase58(),
+          side: order.side === 0 ? "buy" : "sell",
+          usd: Number(order.usdAmount) / 1e6,
+          bandBps: order.bandBps,
+          createdAt: Date.now(),
+        },
+        "failed",
+        { error },
+      );
       out.push({
         owner: order.owner.toBase58(),
         ticker: stock?.ticker || order.stockMint.toBase58(),
-        error: e instanceof Error ? e.message : String(e),
+        error,
       });
     }
   }
@@ -424,10 +455,13 @@ export async function processArms() {
         bandBps: a.bandBps,
         side: a.side,
       });
+      recordArmResult(a, "executed", { tx: filled.signature });
       disarm(a.owner, a.ticker);
       out.push({ owner: a.owner, ticker: a.ticker, signature: filled.signature, live: filled.live });
     } catch (e) {
-      out.push({ owner: a.owner, ticker: a.ticker, error: e instanceof Error ? e.message : String(e) });
+      const error = e instanceof Error ? e.message : String(e);
+      recordArmResult(a, "failed", { error });
+      out.push({ owner: a.owner, ticker: a.ticker, error });
     }
   }
   return out;
@@ -465,6 +499,81 @@ export async function withdraw(opts: { owner: string; kind: "usdc" | "token"; ti
   return { ...sent, user: next };
 }
 
+async function withdrawAllVault(owner: string) {
+  const user = new PublicKey(owner);
+  const conn = connection();
+  const ixs = [];
+  const { ata: usdcAta } = await vaultUsdcAta(user);
+  try {
+    const acc = await conn.getTokenAccountBalance(usdcAta);
+    const raw = BigInt(acc.value.amount);
+    if (raw > 0n) {
+      const ownerAta = await getAssociatedTokenAddress(new PublicKey(USDC), user, false, TOKEN_PROGRAM_ID);
+      ixs.push(await withdrawIx(user, new PublicKey(USDC), ownerAta, raw));
+    }
+  } catch {
+    /* no usdc account */
+  }
+  for (const s of STOCKS) {
+    const mint = new PublicKey(s.mint);
+    try {
+      const { ata } = await vaultStockAta(user, mint);
+      const acc = await conn.getTokenAccountBalance(ata);
+      const raw = BigInt(acc.value.amount);
+      if (raw <= 0n) continue;
+      const ownerAta = await getAssociatedTokenAddress(mint, user, false, TOKEN_PROGRAM_ID);
+      ixs.push(await withdrawIx(user, mint, ownerAta, raw));
+    } catch {
+      /* no balance */
+    }
+  }
+  if (!ixs.length) throw new Error("nothing on the desk to withdraw");
+  const tx = new Transaction().add(...ixs);
+  tx.feePayer = user;
+  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+  return { needsUserSignature: true as const, transaction: txToB64(tx) };
+}
+
+/** One owner signature. Sends the full on-chain USDC and stock balances back to that wallet. SOL stays for fees. */
+export async function withdrawAll(owner: string) {
+  const id = oid(owner);
+  if (!id) throw new Error("connect wallet");
+  if (vaultMode()) return withdrawAllVault(id);
+  const chain = await onchainBalances(id);
+  const sent: { kind: string; ticker?: string; amount: number; signature: string }[] = [];
+  const errors: string[] = [];
+  const sweep = async (label: string, run: () => Promise<void>) => {
+    try {
+      await run();
+    } catch (e) {
+      errors.push(label + ": " + (e instanceof Error ? e.message : String(e)));
+    }
+  };
+  if (chain.usdc > 0) {
+    await sweep("USDC", async () => {
+      const res = await sendFullBalance({ owner: id, mint: USDC, to: id, decimals: 6 });
+      if (!res) return;
+      sent.push({ kind: "usdc", amount: res.amount, signature: res.signature });
+      const book = getUser(id).usdc;
+      if (book > 0) debitWithdraw(id, "usdc", book, undefined, res.signature);
+    });
+  }
+  for (const s of chain.stocks) {
+    const stock = stockByTicker(s.ticker);
+    if (!stock || !(s.shares > 0)) continue;
+    await sweep(stock.ticker, async () => {
+      const res = await sendFullBalance({ owner: id, mint: stock.mint, to: id, decimals: stock.decimals });
+      if (!res) return;
+      sent.push({ kind: "token", ticker: stock.ticker, amount: res.amount, signature: res.signature });
+      const book = getUser(id).holdings[stock.ticker]?.shares || 0;
+      if (book > 0) debitWithdraw(id, "token", book, stock.ticker, res.signature);
+    });
+  }
+  if (!sent.length && errors.length) throw new Error(errors.join("; "));
+  if (!sent.length) throw new Error("nothing on the desk to withdraw");
+  return { sent, errors };
+}
+
 export async function snapshot(owner: string) {
   const u = getUser(owner);
   const chain = vaultMode()
@@ -496,7 +605,37 @@ export async function snapshot(owner: string) {
       withdrawals: u.withdrawals,
     },
     arms: userArms(owner),
+    armRecords: await armHistory(owner),
   };
+}
+
+async function armHistory(owner: string): Promise<ArmRecord[]> {
+  const saved = userArmRecords(owner);
+  if (!vaultMode()) return saved;
+  try {
+    const id = oid(owner);
+    const orders = await listOpenOrders(connection());
+    const chain: ArmRecord[] = orders
+      .filter((o) => o.owner.toBase58() === id)
+      .map((o) => {
+        const stock = STOCKS.find((s) => s.mint === o.stockMint.toBase58());
+        const now = Date.now();
+        return {
+          owner: id,
+          ticker: stock?.ticker || o.stockMint.toBase58().slice(0, 6),
+          usd: Number(o.usdAmount) / 1e6,
+          bandBps: o.bandBps,
+          side: o.side === 0 ? "buy" : "sell",
+          status: "pending" as const,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+    const seen = new Set(saved.filter((r) => r.status === "pending").map((r) => r.ticker + ":" + r.side));
+    return saved.concat(chain.filter((r) => !seen.has(r.ticker + ":" + r.side)));
+  } catch {
+    return saved;
+  }
 }
 
 export async function exportKey(owner: string) {

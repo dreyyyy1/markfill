@@ -8,7 +8,7 @@ import { buildTape } from "./lib/tape.js";
 import { buildSwap, quoteTrade } from "./lib/jupiter.js";
 import { lpPlan } from "./lib/meteora.js";
 import { listReceipts, stampTx } from "./lib/receipts.js";
-import { arm, deskTick, exportKey, ingestDeposits, publicDesk, snapshot, withdraw } from "./lib/desk.js";
+import { arm, deskTick, exportKey, ingestDeposits, publicDesk, snapshot, withdraw, withdrawAll } from "./lib/desk.js";
 import { disarm, listDeskPublic } from "./lib/ledger.js";
 import { requireOwnerSig } from "./lib/auth.js";
 
@@ -162,6 +162,10 @@ const server = http.createServer(async (req, res) => {
         signature: String(body.signature || ""),
         action: "withdraw",
       });
+      if (body.kind === "all") {
+        json(res, 200, await withdrawAll(owner));
+        return;
+      }
       json(
         res,
         200,

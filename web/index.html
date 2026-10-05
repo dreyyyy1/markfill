@@ -74,6 +74,14 @@
     .pill.cheap { color: var(--up); border-color: var(--up); }
     .pill.rich { color: var(--down); border-color: var(--down); }
     .pill.inside { color: var(--amber); border-color: var(--amber); }
+    .st-pending { color: var(--amber); }
+    .st-executed { color: var(--up); }
+    .st-failed { color: var(--down); }
+    #armrecords { margin-top: 10px; font-size: 12px; line-height: 1.55; overflow-x: auto; color: var(--mute); }
+    #armrecords table { min-width: 560px; color: var(--ink); }
+    #armrecords td:last-child { max-width: 240px; word-break: break-word; color: var(--mute); }
+    #holdings { overflow-x: auto; }
+    a.tx { color: var(--amber); text-decoration: underline; text-underline-offset: 2px; }
     #log { height: 130px; overflow: auto; background: #080906; border: 1px solid var(--line); padding: 10px; font-size: 12px; color: #cfc6a8; }
     .btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 16px; }
     .modal {
@@ -216,7 +224,8 @@
         <label>Stock shares</label>
         <input id="wd-shares" placeholder="0.01" />
         <button class="ghost" id="wdtok" style="margin-top:10px">Withdraw this ticker</button>
-        <p class="note">Withdrawals go back to the connected wallet. Put a little SOL on your MarkFill address for fees.</p>
+        <button class="ghost" id="wdall" style="margin-top:10px;width:100%">Withdraw all</button>
+        <p class="note">Withdrawals go back to the connected wallet. Withdraw all sends every USDC and every stock. Leave a little SOL on the MarkFill address for fees.</p>
       </div>
     </section>
 
@@ -245,6 +254,11 @@
       </div>
     </section>
 
+    <div class="panel">
+      <h2>Armed orders</h2>
+      <p class="note" style="margin-top:0">Stays after a reload. Pending is waiting on the tape. Executed has filled. Failed keeps retrying until you disarm.</p>
+      <div id="armrecords">Connect a wallet. An arm stays listed here after you reload.</div>
+    </div>
     <div class="panel">
       <h2>Log</h2>
       <div id="log"></div>
@@ -288,6 +302,7 @@ let lastTape = null;
 let lastLp = null;
 let armed = false;
 let armBusy = false;
+let lastArmRecords = [];
 let deskAddr = "";
 
 function press(btn) {
@@ -371,6 +386,55 @@ function money(n) {
   n = Number(n);
   return "$" + n.toFixed(n >= 100 ? 2 : 3);
 }
+function txHref(sig) {
+  return "https://solscan.io/tx/" + encodeURIComponent(sig);
+}
+function txAnchor(sig, inner) {
+  return `<a class="tx" href="${txHref(sig)}" target="_blank" rel="noopener">${inner}</a>`;
+}
+function solscanLinks(sigs) {
+  const out = [];
+  const seen = new Set();
+  for (const sig of sigs || []) {
+    const s = String(sig || "");
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(txAnchor(s, "solscan " + s.slice(0, 4) + "…"));
+  }
+  return out.length ? out.join("<br>") : "—";
+}
+function renderHoldings(holdings, chainStocks, fills) {
+  const list = (fills || []).slice().reverse();
+  const fillTx = {};
+  for (const f of list) {
+    if (!f || !f.tx || !f.ticker) continue;
+    if (!fillTx[f.ticker]) fillTx[f.ticker] = [];
+    fillTx[f.ticker].push(f.tx);
+  }
+  const h = holdings || {};
+  const onchain = chainStocks || [];
+  const tickers = [...new Set([...onchain.map((s) => s.ticker), ...Object.keys(h)])];
+  const stockRows = tickers.length
+    ? `<table><thead><tr><th>Stock</th><th>On chain</th><th>Cost</th><th>Tx</th></tr></thead><tbody>` +
+      tickers
+        .map((k) => {
+          const on = onchain.find((s) => s.ticker === k);
+          const led = h[k];
+          const links = solscanLinks([...(fillTx[k] || []), ...(on?.txs || [])]);
+          return `<tr><td>${esc(on?.xSymbol || k)}</td><td>${Number(on?.shares ?? led?.shares ?? 0).toFixed(6)}</td><td>${led ? money(led.costUsd) : "—"}</td><td>${links}</td></tr>`;
+        })
+        .join("") +
+      `</tbody></table>`
+    : "<div>no stock yet</div>";
+  const lines = list
+    .map((f) => {
+      const text = `${esc(f.side)} ${esc(f.ticker)}  ${money(f.usd)}  ${Number(f.shares).toFixed(6)} sh`;
+      const link = f.tx ? "  " + txAnchor(f.tx, "solscan " + String(f.tx).slice(0, 4) + "…") : "";
+      return `<div>${text}${link}</div>`;
+    })
+    .join("");
+  return stockRows + (lines ? `<div style="margin-top:10px">${lines}</div>` : "");
+}
 function bps(n) {
   if (n == null || !Number.isFinite(Number(n))) return "—";
   const v = Number(n);
@@ -438,11 +502,6 @@ async function fire(side) {
       await api("/api/receipts/tx", { method: "POST", body: { id: r.receipt.id, tx: hash } });
     }
     log((side === "sell" ? "sold " : "bought ") + r.tape.xSymbol + "  " + hash);
-    if (armed && side === "buy") {
-      armed = false;
-      $("arm").textContent = "Arm wait";
-      $("armnote").textContent = "Fill landed. Arm cleared.";
-    }
     loadFills();
   } catch (e) {
     log(e.message);
@@ -450,6 +509,7 @@ async function fire(side) {
   }
   armBusy = false;
   syncButtons();
+  syncArmButton();
 }
 
 function renderWalletList() {
@@ -476,6 +536,8 @@ function renderWalletList() {
         $("wmodal").classList.add("hidden");
         log("connected " + (s.name || "") + " " + pubkey);
         syncButtons();
+        noteOwner();
+        paintArms(readCachedArms(pubkey));
         loadMe();
       } catch (e) {
         log(e.message);
@@ -491,6 +553,7 @@ function clearSession() {
   $("connect").textContent = "Connect wallet";
   $("disconnect").classList.add("hidden");
   syncButtons();
+  syncArmButton();
 }
 
 $("connect").onclick = (e) => {
@@ -534,7 +597,10 @@ document.querySelectorAll("nav button").forEach((b) => {
   };
 });
 
-$("ticker").onchange = () => refreshTape();
+$("ticker").onchange = () => {
+  refreshTape();
+  syncArmButton();
+};
 $("buy").onclick = () => withBusy($("buy"), "Buying…", () => fire("buy"));
 $("sell").onclick = () => withBusy($("sell"), "Selling…", () => fire("sell"));
 $("arm").onclick = async () => {
@@ -546,9 +612,10 @@ $("arm").onclick = async () => {
         const message = "MarkFill disarm " + pubkey + " ts=" + Date.now();
         const signature = await signMessage(session, message);
         await api("/api/desk/disarm", { method: "POST", body: { owner: pubkey, ticker: $("ticker").value, message, signature } });
+        dropLocalArm($("ticker").value);
         armed = false;
         $("armnote").textContent = "Arm is off. Deposit USDC on Account, then Arm again.";
-        log("disarmed");
+        log("disarmed " + $("ticker").value);
         return;
       }
       const message = "MarkFill arm " + pubkey + " ts=" + Date.now();
@@ -569,19 +636,33 @@ $("arm").onclick = async () => {
         const { Transaction } = await import("https://esm.sh/@solana/web3.js@1.98.4");
         const raw = Uint8Array.from(atob(r.transaction), (c) => c.charCodeAt(0));
         const hash = await signAndSend(session, Transaction.from(raw));
+        rememberLocalArm({
+          ticker: $("ticker").value,
+          usd: Number($("usd").value),
+          side: "buy",
+          status: "pending",
+          tx: hash,
+        });
         armed = true;
         $("armnote").textContent = "Order is on your vault. The keeper fills it when this name is cheap or fair.";
         log("armed on vault " + hash);
         return;
       }
+      rememberLocalArm({
+        ticker: $("ticker").value,
+        usd: Number($("usd").value),
+        side: "buy",
+        status: "pending",
+      });
       armed = true;
       $("armnote").textContent = "MarkFill will buy from your deposited USDC when this name is cheap or fair. No extra wallet popup.";
-      log("armed on desk wallet");
+      log("armed " + $("ticker").value);
     });
-    btn.textContent = armed ? "Armed — desk will fill" : "Arm desk";
+    await refreshArmRecords();
+    syncArmButton();
   } catch (e) {
     log(e.message);
-    btn.textContent = armed ? "Armed — desk will fill" : "Arm desk";
+    syncArmButton();
   }
 };
 
@@ -610,6 +691,159 @@ $("openm").onclick = (e) => { press(e.currentTarget); if (lastLp?.meteoraUrl) wi
 
 function deskCacheKey(owner) {
   return "markfill.desk." + owner;
+}
+
+function armCacheKey(owner) {
+  return "markfill.arms." + owner;
+}
+
+function noteOwner() {
+  if (!pubkey) return;
+  try { localStorage.setItem("markfill.lastOwner", pubkey); } catch { /* private mode */ }
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function readCachedArms(owner) {
+  try {
+    const rows = JSON.parse(localStorage.getItem(armCacheKey(owner)) || "[]");
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberLocalArm(row) {
+  if (!pubkey) return;
+  const now = Date.now();
+  const status = row.status || "pending";
+  const next = {
+    ticker: row.ticker,
+    usd: Number(row.usd) || 0,
+    side: row.side || "buy",
+    status,
+    createdAt: now,
+    updatedAt: now,
+    tx: row.tx || "",
+    error: row.error || "",
+    live: status !== "executed",
+  };
+  const rows = readCachedArms(pubkey).filter((r) => !(r.ticker === next.ticker && r.side === next.side && r.status !== "executed"));
+  rows.unshift(next);
+  const kept = rows.slice(0, 30);
+  localStorage.setItem(armCacheKey(pubkey), JSON.stringify(kept));
+  paintArms(kept);
+}
+
+function dropLocalArm(ticker) {
+  if (!pubkey) return;
+  const rows = readCachedArms(pubkey)
+    .filter((r) => !(r.ticker === ticker && r.status === "pending"))
+    .map((r) => (r.ticker === ticker ? { ...r, live: false } : r));
+  localStorage.setItem(armCacheKey(pubkey), JSON.stringify(rows));
+  paintArms(rows);
+}
+
+function sameArm(a, b) {
+  return a.ticker === b.ticker && (a.side || "buy") === (b.side || "buy");
+}
+
+function mergeArmRecords(server, local) {
+  const out = (server || []).map((r) => ({ ...r }));
+  for (const row of local || []) {
+    const match = out.find((r) => sameArm(r, row) && r.status === row.status);
+    if (match) {
+      if (!match.tx && row.tx) match.tx = row.tx;
+      if (!match.error && row.error) match.error = row.error;
+      continue;
+    }
+    if (row.status === "pending" && out.some((r) => sameArm(r, row))) continue;
+    if (row.status === "pending" && !row.tx) continue;
+    out.push(row);
+  }
+  return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 30);
+}
+
+function syncArmButton() {
+  const btn = $("arm");
+  const locked = !!(btn && btn.disabled) || armBusy;
+  if (!pubkey) {
+    armed = false;
+    if (btn && !locked) btn.textContent = "Arm desk";
+    return;
+  }
+  const ticker = $("ticker").value;
+  const row = lastArmRecords.find((a) => a.ticker === ticker && (a.status === "pending" || (a.status === "failed" && a.live)));
+  armed = !!row;
+  if (!btn || locked) return;
+  if (row && row.status === "failed") btn.textContent = "Armed — last try failed";
+  else if (row) btn.textContent = "Armed — desk will fill";
+  else btn.textContent = "Arm desk";
+}
+
+function paintArms(rows) {
+  const next = rows || [];
+  const el = $("armrecords");
+  if (!el) return;
+  const sig = (pubkey || "") + "\n" + JSON.stringify(next);
+  if (sig === paintArms.last) {
+    syncArmButton();
+    return;
+  }
+  paintArms.last = sig;
+  lastArmRecords = next;
+  if (!next.length) {
+    el.textContent = pubkey ? "Nothing armed yet." : "Connect a wallet. An arm stays listed here after you reload.";
+    syncArmButton();
+    return;
+  }
+  const stale = pubkey ? "" : `<div class="note">Showing the last wallet on this browser. Connect it to refresh pending, executed, and failed.</div>`;
+  el.innerHTML =
+    stale +
+    `<table><thead><tr><th>Stock</th><th>Side</th><th>Size</th><th>Status</th><th>Updated</th><th>Detail</th></tr></thead><tbody>` +
+    next
+      .map((r) => {
+        const when = r.updatedAt ? new Date(r.updatedAt).toLocaleString() : "";
+        const detail = r.status === "failed" ? r.error || "" : r.tx ? String(r.tx).slice(0, 8) + "…" : "";
+        const label = r.status === "executed" ? "Executed" : r.status === "failed" ? (r.live ? "Failed · retrying" : "Failed") : "Pending";
+        return `<tr><td>${esc(r.ticker)}</td><td>${esc(r.side)}</td><td>$${Number(r.usd || 0).toFixed(2)}</td><td class="st-${esc(r.status)}">${label}</td><td>${esc(when)}</td><td>${esc(detail)}</td></tr>`;
+      })
+      .join("") +
+    `</tbody></table>`;
+  syncArmButton();
+}
+
+function rowsFromMe(me) {
+  const live = new Set((me.arms || []).filter((a) => a.armed !== false).map((a) => a.ticker + ":" + (a.side || "buy")));
+  const records = (Array.isArray(me.armRecords) ? me.armRecords : []).map((r) => ({
+    ...r,
+    live: live.has(r.ticker + ":" + (r.side || "buy")),
+  }));
+  const seen = new Set(records.filter((r) => r.status !== "executed").map((r) => r.ticker + ":" + (r.side || "buy")));
+  for (const a of me.arms || []) {
+    if (a.armed === false) continue;
+    const key = a.ticker + ":" + (a.side || "buy");
+    if (seen.has(key)) continue;
+    records.push({ ...a, status: "pending", updatedAt: a.createdAt, live: true });
+  }
+  return records;
+}
+
+async function refreshArmRecords() {
+  if (!pubkey) return;
+  noteOwner();
+  const local = readCachedArms(pubkey);
+  paintArms(local);
+  try {
+    const me = await api("/api/desk/me?owner=" + encodeURIComponent(pubkey));
+    const rows = mergeArmRecords(rowsFromMe(me), local);
+    localStorage.setItem(armCacheKey(pubkey), JSON.stringify(rows));
+    paintArms(rows);
+  } catch {
+    /* keep the saved list */
+  }
 }
 
 async function loadDesk() {
@@ -656,36 +890,20 @@ async function loadMe() {
   const chain = me.balances || {};
   $("mysol").textContent = chain.sol != null ? Number(chain.sol).toFixed(4) + " SOL" : "—";
   $("myusdc").textContent = money(chain.usdc != null ? chain.usdc : me.user?.usdc);
-  const h = me.user?.holdings || {};
-  const chainStocks = chain.stocks || [];
-  const tickers = [...new Set([...chainStocks.map((s) => s.ticker), ...Object.keys(h)])];
-  const fills = (me.user?.fills || []).slice().reverse();
-  const stockRows = tickers.length
-    ? `<table><thead><tr><th>Stock</th><th>On chain</th><th>Cost</th></tr></thead><tbody>` +
-      tickers
-        .map((k) => {
-          const on = chainStocks.find((s) => s.ticker === k);
-          const led = h[k];
-          return `<tr><td>${on?.xSymbol || k}</td><td>${Number(on?.shares ?? led?.shares ?? 0).toFixed(6)}</td><td>${led ? money(led.costUsd) : "—"}</td></tr>`;
-        })
-        .join("") +
-      `</tbody></table>`
-    : "<div>no stock yet</div>";
-  $("holdings").innerHTML =
-    stockRows +
-    (fills.length
-      ? "<div style='margin-top:10px'>" +
-        fills
-          .map(
-            (f) =>
-              `<div>${f.side} ${f.ticker}  ${money(f.usd)}  ${Number(f.shares).toFixed(6)} sh  ${f.tx ? String(f.tx).slice(0, 8) + "…" : ""}</div>`,
-          )
-          .join("") +
-        "</div>"
-      : "");
-  armed = (me.arms || []).some((a) => a.armed && a.ticker === $("ticker").value);
-  $("arm").textContent = armed ? "Armed — desk will fill" : "Arm desk";
+  $("holdings").innerHTML = renderHoldings(me.user?.holdings || {}, chain.stocks || [], me.user?.fills || []);
+  noteOwner();
+  const rows = mergeArmRecords(rowsFromMe(me), readCachedArms(pubkey));
+  localStorage.setItem(armCacheKey(pubkey), JSON.stringify(rows));
+  paintArms(rows);
 }
+
+try {
+  const lastOwner = localStorage.getItem("markfill.lastOwner");
+  if (lastOwner) paintArms(readCachedArms(lastOwner));
+} catch { /* private mode */ }
+setInterval(() => {
+  if (pubkey && !document.hidden) refreshArmRecords();
+}, 20000);
 
 $("copydesk").onclick = () => withBusy($("copydesk"), "Copying…", async () => {
   if (!deskAddr) await loadDesk();
@@ -718,27 +936,39 @@ $("copykey").onclick = () => withBusy($("copykey"), "Copying…", async () => {
 });
 $("keyclose").onclick = () => $("keymodal").classList.add("hidden");
 $("refreshme").onclick = () => withBusy($("refreshme"), "Refreshing…", loadMe);
-$("wdusdc").onclick = () => withBusy($("wdusdc"), "Sending…", async () => {
+async function withdrawDesk(extra) {
   if (!pubkey || !session) throw new Error("connect wallet first");
   const message = "MarkFill withdraw " + pubkey + " ts=" + Date.now();
   const signature = await signMessage(session, message);
   const r = await api("/api/desk/withdraw", {
     method: "POST",
-    body: { owner: pubkey, kind: "usdc", amount: Number($("wd-usdc").value), message, signature },
+    body: { owner: pubkey, message, signature, ...extra },
   });
-  log("withdraw USDC " + (r.signature || ""));
+  if (r && r.needsUserSignature && r.transaction) {
+    const { Transaction } = await import("https://esm.sh/@solana/web3.js@1.98.4");
+    const raw = Uint8Array.from(atob(r.transaction), (c) => c.charCodeAt(0));
+    const hash = await signAndSend(session, Transaction.from(raw));
+    log("withdraw " + hash);
+    await loadMe();
+    return;
+  }
+  if (r && Array.isArray(r.sent)) {
+    if (!r.sent.length) log("nothing on the desk to withdraw");
+    for (const row of r.sent) log("withdrew " + (row.ticker || "USDC") + " " + (row.signature || ""));
+    if (r.errors && r.errors.length) log(r.errors.join("; "));
+  } else {
+    log("withdraw " + (extra.kind || "") + " " + (r.signature || ""));
+  }
   await loadMe();
+}
+$("wdusdc").onclick = () => withBusy($("wdusdc"), "Sending…", async () => {
+  await withdrawDesk({ kind: "usdc", amount: Number($("wd-usdc").value) });
 });
 $("wdtok").onclick = () => withBusy($("wdtok"), "Sending…", async () => {
-  if (!pubkey || !session) throw new Error("connect wallet first");
-  const message = "MarkFill withdraw " + pubkey + " ts=" + Date.now();
-  const signature = await signMessage(session, message);
-  const r = await api("/api/desk/withdraw", {
-    method: "POST",
-    body: { owner: pubkey, kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value), message, signature },
-  });
-  log("withdraw stock " + (r.signature || ""));
-  await loadMe();
+  await withdrawDesk({ kind: "token", ticker: $("ticker").value, amount: Number($("wd-shares").value) });
+});
+$("wdall").onclick = () => withBusy($("wdall"), "Sending…", async () => {
+  await withdrawDesk({ kind: "all" });
 });
 
 async function loadFills() {
